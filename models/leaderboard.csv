@@ -29,3 +29,6 @@ timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,sav
 2026-10-23 00:55:59,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8984,0.9286,0.9291
 2026-10-23 00:56:07,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8832,0.9286,0.9291
 2026-10-23 00:56:12,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8767,0.875,0.8776
+2026-10-26 12:22:57,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8984,0.9286,0.9291
+2026-10-26 12:23:04,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8832,0.9286,0.9291
+2026-10-26 12:23:09,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8767,0.875,0.8776

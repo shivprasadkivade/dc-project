@@ -1,4 +1,4 @@
-# AcousticTap Hybrid Test Report (20261023_005613)
+# AcousticTap Hybrid Test Report (20261026_122310)
 
 - **Winning Architecture:** `ExtraTrees_V3` (85% ML + 15% Fourier Triangulation)
 - **Total Dataset Samples:** 839 (671 train / 168 holdout)
