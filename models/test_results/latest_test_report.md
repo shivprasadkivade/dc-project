@@ -1,28 +1,29 @@
-# AcousticTap Hybrid Test Report (20261023_005613)
+# AcousticTap V3 Hybrid Test Report (20261102_002127)
 
-- **Winning Architecture:** `ExtraTrees_V3` (85% ML + 15% Fourier Triangulation)
-- **Total Dataset Samples:** 839 (671 train / 168 holdout)
-- **5-Fold Cross-Validation Macro F1:** `0.8984`
-- **Holdout Test Accuracy:** `92.86%`
-- **Holdout Test Macro F1:** `0.9291`
+- **Winning Architecture:** `Hybrid_SVM_RBF` (70% ML + 30% Fourier Triangulation)
+- **Best Tuned Parameters:** `{'clf__C': 5.0, 'clf__gamma': 'scale'}`
+- **Dataset Partition:** 451 samples (360 train / 91 holdout)
+- **Cross-Validation Macro F1:** `0.9640`
+- **Holdout Test Accuracy:** `94.51%`
+- **Holdout Test Macro F1:** `0.9450`
 
 ## Holdout Classification Report
 ```text
               precision    recall  f1-score   support
 
-    left_tap       0.88      0.94      0.91        63
-       noise       0.91      0.93      0.92        45
-   right_tap       1.00      0.92      0.96        60
+    left_tap       0.94      1.00      0.97        30
+   right_tap       0.93      0.90      0.92        31
+       noise       0.97      0.93      0.95        30
 
-    accuracy                           0.93       168
-   macro avg       0.93      0.93      0.93       168
-weighted avg       0.93      0.93      0.93       168
+    accuracy                           0.95        91
+   macro avg       0.95      0.95      0.94        91
+weighted avg       0.95      0.95      0.94        91
 
 ```
 
-## Confusion Matrix (`['left_tap', 'noise', 'right_tap']`)
+## Confusion Matrix (`['left_tap', 'right_tap', 'noise']`)
 ```text
-[[59  4  0]
- [ 3 42  0]
- [ 5  0 55]]
+[[30  0  0]
+ [ 2 28  1]
+ [ 0  2 28]]
 ```

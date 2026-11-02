@@ -10,6 +10,7 @@ requires-python = ">=3.9"
 dependencies = [
     "joblib>=1.5.3",
     "librosa>=0.11.0",
+    "matplotlib>=3.9.4",
     "numpy>=2.0.2",
     "pynput>=1.8.2",
     "pyyaml>=6.0.3",
@@ -19,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 holo = "holo:main"
+holo-sonar-proof = "holo.visualize_sonar:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

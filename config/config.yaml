@@ -1,50 +1,121 @@
+# =====================================================================
+# AcousticTap V3 Master Configuration (config/config.yaml)
+# Architecture: Hybrid ML + Fourier Triangulation + Active Ultrasonic Sonar Gate
+# =====================================================================
+
 project:
-  name: "AcousticTap-Holo"
+  name: "AcousticTap"
   version: "3.0.0-hybrid-fourier-ultrasonic"
 
 audio:
-  sample_rate: 48000
-  block_size: 512
-  pre_blocks: 6
-  post_blocks: 10
-  cooldown_blocks: 25
-  rms_threshold: 0.004
-  dynamic_multiplier: 2.0
-  lowpass_cutoff_hz: 16000.0
+  sample_rate: 48000            # 48000 Hz allows clean 19 kHz & 20.2 kHz ultrasonic carriers
+  block_size: 512               # 512 samples ≈ 10.7 ms per block
+  pre_blocks: 4                 # Blocks captured BEFORE impact spike
+  post_blocks: 8                # Blocks captured AFTER impact spike
+  cooldown_blocks: 25           # Cooldown blocks (~267 ms) to prevent double triggers
+  channels: 1                   # Default 1 (mono); set 2 for stereo hardware
+  lowpass_cutoff_hz: 16000.0    # Butterworth low-pass cutoff to isolate tap acoustics from ultrasonic carriers
+
+detector:
+  rms_threshold: 0.008          # Base microphone RMS trigger threshold
+  peak_multiplier: 1.8          # Peak amplitude must exceed rms_threshold * peak_multiplier
+  bg_snr_ratio: 2.0             # RMS must exceed rolling background floor * bg_snr_ratio
+  bg_ema_alpha: 0.95            # Exponential moving average decay for background noise floor
+  crest_threshold: 1.85         # Minimum crest factor for transient detection
 
 ultrasonic:
-  enabled: true
-  left_freq_hz: 19000.0
-  right_freq_hz: 20200.0
-  speaker_amplitude: 0.03
-  carrier_bw_hz: 25.0
-  doppler_min_hz: 25.0
-  doppler_max_hz: 180.0
-  alpha_doppler: 0.65
-  gate_threshold: 2.0
-  gate_steepness: 2.5
-  calibration_blocks: 35
+  enabled: true                 # Active ultrasonic sonar carrier emitter and gate
+  left_freq_hz: 19000.0         # Continuous ultrasonic carrier frequency for Left palm rest
+  right_freq_hz: 20200.0        # Continuous ultrasonic carrier frequency for Right palm rest
+  speaker_amplitude: 0.03       # Playback amplitude (0.02 - 0.05 is safe & inaudible)
+  carrier_bw_hz: 30.0           # Narrowband carrier inspection bandwidth (+/- 30 Hz)
+  doppler_min_hz: 20.0          # Minimum Doppler offset from carrier (+/- 20 Hz)
+  doppler_max_hz: 180.0         # Maximum Doppler offset from carrier (+/- 180 Hz)
+  alpha_doppler: 0.65           # Weight between Doppler broadening and amplitude perturbation
+  gate_threshold: 1.5           # Z-score threshold to confirm physical finger motion
+  gate_steepness: 2.5           # Sigmoid steepness for probability modulation
+  calibration_blocks: 35        # Baseline ambient quiet frames for hands-off calibration
+  ramp_duration_ms: 60.0        # Smooth cosine ramp envelope duration to prevent speaker clicks
 
-classes:
-  - "left_tap"
-  - "right_tap"
-  - "noise"
-
-fusion:
-  fourier_weight: 0.50
-  auto_tune_weight: true
-  ultrasonic_2fa_enabled: true
+signal_window:
+  search_start_samples: 256     # Start index when locking onto microsecond peak
+  search_end_margin: 512        # Margin from end of buffer when searching for peak
+  pre_noise_guard_samples: 96   # Samples before peak excluded from background noise floor
+  onset_pre_peak_samples: 32    # Samples before peak included in onset/wake window
+  onset_length_samples: 256     # Direct ballistic wave window length (256 ≈ 5.3 ms at 48kHz)
+  wake_length_samples: 1024     # Cavity resonance wake window length (1024 ≈ 21.3 ms at 48kHz)
 
 features:
-  default_set: "all"
-  n_mfcc: 13
+  mode: "enhanced"              # "baseline" or "enhanced"
+  n_mfcc: 20                    # Number of MFCC coefficients
+  n_mels: 40                    # Mel filterbank bands
+  n_fft: 256                    # STFT window length for MFCCs
+  hop_length: 64                # STFT hop length for MFCCs
 
-models:
-  random_state: 42
+fourier_triangulation:
+  num_bands: 12                 # Number of log-spaced FFT spatial resonance bands
+  freq_min_hz: 150.0            # Minimum frequency for spatial FFT bands
+  freq_max_hz: 15000.0          # Maximum frequency for spatial FFT bands (< 16000 Hz LPF)
+  hf_band_hz: [3000.0, 14000.0] # High-frequency flexural Lamb wave band
+  lf_band_hz: [150.0, 900.0]    # Low-frequency flexural Lamb wave band
+  gcc_max_lag_samples: 20       # Max stereo sample delay for GCC-PHAT cross-correlation
+  lda_solver: "lsqr"            # "lsqr" or "eigen"
+  lda_shrinkage: "auto"         # "auto" or float between 0.0 and 1.0
+  lda_weight: 0.65              # Weight of LDA vs Cosine Similarity (1 - lda_weight) inside Fourier module
+  cosine_temperature: 2.5       # Softmax sharpness for spectral template matching
+
+hybrid_fusion:
+  fourier_weight: 0.50          # Default 50/50 fusion weight (0.50 ML + 0.50 Fourier)
+  auto_tune_weight: true        # Automatically sweep weights during training
+  weight_search_grid: [0.20, 0.30, 0.40, 0.50, 0.60, 0.70]
+  ultrasonic_2fa_enabled: true  # Require ultrasonic confirmation before triggering
+
+training:
+  classes: ["left_tap", "right_tap", "noise"]
   cv_folds: 5
   test_size: 0.20
+  random_seed: 42
+  optimize_hyperparameters: true
+
+  models:
+    SVM_RBF:
+      C: 15.0
+      gamma: "scale"
+      kernel: "rbf"
+      class_weight:
+        0: 1.25   # left_tap
+        1: 1.00   # right_tap
+        2: 1.00   # noise
+    RandomForest:
+      n_estimators: 250
+      max_depth: 14
+      min_samples_split: 2
+      class_weight: "balanced"
+    ExtraTrees:
+      n_estimators: 250
+      max_depth: null
+      min_samples_split: 2
+      class_weight: "balanced"
+
+  param_grids:
+    SVM_RBF:
+      clf__C: [5.0, 15.0, 30.0]
+      clf__gamma: ["scale", "auto"]
+    RandomForest:
+      clf__n_estimators: [150, 250]
+      clf__max_depth: [12, null]
+    ExtraTrees:
+      clf__n_estimators: [150, 250]
+      clf__max_depth: [14, null]
 
 listener:
-  confidence_threshold: 0.58
-  snr_gate_db: 6.0
+  default_confidence: 0.60
+  class_thresholds:
+    left_tap: 0.58
+    right_tap: 0.65
+  typing_suppression_seconds: 0.15
+  os_modifier_key: "auto"       # "auto" picks "cmd" on macOS, "ctrl" on Windows/Linux
+  shortcuts:
+    left_tap: "c"               # Cmd+C / Ctrl+C
+    right_tap: "v"              # Cmd+V / Ctrl+V
   enable_shortcuts: false

@@ -29,3 +29,12 @@ timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,sav
 2026-10-23 00:55:59,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8984,0.9286,0.9291
 2026-10-23 00:56:07,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8832,0.9286,0.9291
 2026-10-23 00:56:12,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8767,0.875,0.8776
+2026-11-02 00:10:52,Hybrid_SVM_RBF,enhanced,360,0.9557,0.9111,0.964,0.9451,0.945,0.3
+2026-11-02 00:10:54,Hybrid_RandomForest,enhanced,360,0.9473,0.9111,0.9584,0.956,0.9561,0.2
+2026-11-02 00:10:56,Hybrid_ExtraTrees,enhanced,360,0.9501,0.9111,0.9612,0.9451,0.9455,0.2
+2026-11-02 00:19:20,Hybrid_SVM_RBF,enhanced,360,0.9557,0.9111,0.964,0.9451,0.945,0.3
+2026-11-02 00:19:23,Hybrid_RandomForest,enhanced,360,0.9473,0.9111,0.9584,0.956,0.9561,0.2
+2026-11-02 00:19:25,Hybrid_ExtraTrees,enhanced,360,0.9501,0.9111,0.9612,0.9451,0.9455,0.2
+2026-11-02 00:21:23,Hybrid_SVM_RBF,enhanced,360,0.9557,0.9111,0.964,0.9451,0.945,0.3
+2026-11-02 00:21:25,Hybrid_RandomForest,enhanced,360,0.9473,0.9111,0.9584,0.956,0.9561,0.2
+2026-11-02 00:21:27,Hybrid_ExtraTrees,enhanced,360,0.9501,0.9111,0.9612,0.9451,0.9455,0.2
