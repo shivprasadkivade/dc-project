@@ -206,25 +206,3 @@ uv run python -m src.holo.listen --confidence 0.70
 
 ---
 
-## 10. Academic Report Expansions and Automated Benchmarks
-
-To support rigorous evaluation for an academic committee or course instructor, we implemented an automated experimental validation script (`benchmark_report.py`) that profiles the system and generates presentation-ready artifacts:
-
-1. **Spectrogram Comparison Figures**: Side-by-side time-frequency spectrograms comparing a Left Palm Tap, a Right Palm Tap, and a Keyboard Spacebar Strike ([`reports/spectrogram_comparison.png`](reports/spectrogram_comparison.png)).
-2. **Latency Breakdown Table**: Execution timing across all five pipeline stages showing an end-to-end latency of ~15.6 ms, well within the 20 ms real-time interactive deadline ([`reports/latency_breakdown.md`](reports/latency_breakdown.md)).
-3. **Surface Damping Experiments**: Analysis of acoustic decay times ($T_{60}$) and attack-to-decay ratios when the MacBook rests on a Wooden Desk (88.9%), a Mousepad (82.2%), and a User Lap (75.6%) ([`reports/surface_damping_analysis.md`](reports/surface_damping_analysis.md)).
-4. **Feature Importance Ranking**: Random Forest Gini importances and ANOVA F-tests identifying the Top 15 most discriminative acoustic features ([`reports/feature_importance.png`](reports/feature_importance.png) and [`reports/feature_importance.md`](reports/feature_importance.md)).
-5. **Fourier Transform Analysis (Arrival Timing & Frequency Shifts)**: Lamb-wave dispersion arrival time differences and 12-band spatial resonance profile comparison (evaluated on the `v2-hybrid-fourier` branch).
-6. **Consolidated Academic Report**: Summary integrating the benchmark findings ([`reports/instructor_expansion_report.md`](reports/instructor_expansion_report.md)).
-
-### Running the MacBook Validation Suite
-MacBook users can run the benchmark suite with a single command:
-```bash
-# Automated run (generates all 4 reports in ~5 seconds):
-uv run python benchmark_report.py
-
-# Interactive guided run (guides you to tap your MacBook step-by-step):
-uv run python benchmark_report.py --interactive
-```
-
-For complete setup instructions, macOS microphone permission guidance, and troubleshooting, see the [`MAC_TESTER_GUIDE.md`](MAC_TESTER_GUIDE.md).
