@@ -862,8 +862,8 @@ def run_fourier_benchmarks(
     ax_diff.axhline(0, color="black", lw=1)
     ax_diff.set_xticks(x_indices)
     ax_diff.set_xticklabels([f"Band {i+1}" for i in range(12)], fontsize=9)
-    ax_diff.set_title(r"Differential Spatial Signature ($\Delta$ Energy = Left - Right): Demonstrates Spatial Nodal Separation", fontsize=12, fontweight="bold")
-    ax_diff.set_ylabel(r"$\Delta$ Energy (dB)", fontsize=10)
+    ax_diff.set_title("Differential Spatial Signature ($\Delta$ Energy = Left - Right): Demonstrates Spatial Nodal Separation", fontsize=12, fontweight="bold")
+    ax_diff.set_ylabel("$\Delta$ Energy (dB)", fontsize=10)
     ax_diff.grid(axis="y", linestyle="--", alpha=0.4)
 
     # Annotations

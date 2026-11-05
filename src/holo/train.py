@@ -114,15 +114,14 @@ def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | 
     if len(np.unique(y)) < 2:
         raise ValueError("Collect samples for at least 2 classes inside ./dataset before training!")
 
-    # Strict isolation: partition 80% train / 20% holdout test before any optimization
-    indices = np.arange(len(y))
-    train_idx, test_idx = train_test_split(
-        indices, test_size=float(tr_cfg["test_size"]), stratify=y, random_state=seed
+    print(f"\n[TRAIN] Loaded {len(X)} total samples across {len(np.unique(y))} classes.")
+    print(f"Feature vector dimension: {X.shape[1]} ({feature_set} mode)\n")
+
+    # Strict isolation: 80% train / 20% holdout test
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
     )
-    X_ml_tr, y_tr = X_ml[train_idx], y[train_idx]
-    X_fourier_tr = X_fourier[train_idx]
-    X_ml_te, y_te = X_ml[test_idx], y[test_idx]
-    X_fourier_te = X_fourier[test_idx]
+    print(f"Dataset split: {len(X_train)} training samples | {len(X_test)} holdout test samples\n")
 
     print(f"\n[TRAIN HYBRID] Total Samples: {len(y)} | Train: {len(train_idx)} | Holdout: {len(test_idx)}")
     print(f"ML Feature Dim: {X_ml.shape[1]} | Fourier Dim: {X_fourier.shape[1]}")
@@ -148,48 +147,19 @@ def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | 
                 "optimal_fourier_weight", "saved_path"
             ])
 
-        for name, base_pipeline in candidates.items():
-            if do_opt and name in param_grids:
-                raw_grid = param_grids[name]
-                clean_grid = {}
-                for k, v_list in raw_grid.items():
-                    clean_list = []
-                    for item in v_list:
-                        if isinstance(item, dict):
-                            clean_list.append({int(ck): float(cv) for ck, cv in item.items()})
-                        else:
-                            clean_list.append(item)
-                    clean_grid[k] = clean_list
+        for name, pipeline in candidates.items():
+            # Problem 1 Fix: Cross-validation runs strictly on X_train / y_train
+            cv_scores = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring="f1_macro")
+            cv_mean = float(np.mean(cv_scores))
+            cv_std = float(np.std(cv_scores))
 
-                # Critical Fix 1: GridSearchCV runs strictly on (X_ml_tr, y_tr)
-                cv_obj = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=seed)
-                gs = GridSearchCV(base_pipeline, clean_grid, cv=cv_obj, scoring="f1_macro", n_jobs=-1)
-                gs.fit(X_ml_tr, y_tr)
-                tuned_pipeline = gs.best_estimator_
-                tuned_params = gs.best_params_
-            else:
-                tuned_pipeline = base_pipeline
-                tuned_params = {}
+            # Fit candidate strictly on training split and evaluate unseen holdout
+            pipeline.fit(X_train, y_train)
+            test_preds = pipeline.predict(X_test)
+            holdout_f1 = float(f1_score(y_test, test_preds, average="macro"))
 
-            # Critical Fix 2: evaluate_hybrid_cv runs strictly on the training split
-            ml_cv, fourier_cv, hybrid_cv, opt_w = evaluate_hybrid_cv(
-                tuned_pipeline, X_ml_tr, X_fourier_tr, y_tr, weight_grid=weight_grid, n_splits=cv_folds, seed=seed
-            )
-
-            # Holdout evaluation on untouched test split
-            holdout_pipe = clone(tuned_pipeline).fit(X_ml_tr, y_tr)
-            tri_holdout = FourierTriangulator().fit(X_fourier_tr, y_tr)
-            p_ml_test = holdout_pipe.predict_proba(X_ml_te)
-            p_tri_test = tri_holdout.predict_proba(X_fourier_te)
-            p_hyb_test = (1.0 - opt_w) * p_ml_test + opt_w * p_tri_test
-            preds_test = np.argmax(p_hyb_test, axis=1)
-            holdout_f1 = float(f1_score(y_te, preds_test, average="macro"))
-
-            # Refit on 100% dataset strictly for deployment artifact version
-            full_pipe = clone(tuned_pipeline).fit(X_ml, y)
-            tri_full = FourierTriangulator().fit(X_fourier, y)
-            version_filename = f"Hybrid_{name}_{mode}_{timestamp}.joblib"
-            version_path = VERSIONS_DIR / version_filename
+            version_filename = f"{name}_{feature_set}_{timestamp}.joblib"
+            version_path = versions_dir / version_filename
 
             joblib.dump({
                 "model": full_pipe,
@@ -199,38 +169,29 @@ def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | 
                 "best_params": tuned_params,
                 "feature_set": mode,
                 "classes": CLASSES,
-                "cv_f1": hybrid_cv,
-                "holdout_f1": holdout_f1,
-                "timestamp": timestamp
+                "cv_f1": cv_mean,
+                "holdout_f1": holdout_f1
             }, version_path)
 
             writer.writerow([
-                timestamp, f"Hybrid_{name}", mode, len(train_idx),
-                f"{ml_cv:.4f}", f"{fourier_cv:.4f}", f"{hybrid_cv:.4f}", f"{holdout_f1:.4f}",
-                f"{opt_w:.2f}", str(version_path.relative_to(MODEL_DIR.parent))
+                timestamp, name, feature_set, len(X_train),
+                f"{cv_mean:.4f}", f"{cv_std:.4f}", f"{holdout_f1:.4f}",
+                str(version_path.relative_to(MODEL_DIR.parent))
             ])
 
-            print(f"  {name:13s} | ML F1: {ml_cv:.3f} | FFT F1: {fourier_cv:.3f} | Hybrid F1: {hybrid_cv:.4f} (w={opt_w:.2f}) | Holdout: {holdout_f1:.4f}")
-            if tuned_params:
-                print(f"                  Best Params: {tuned_params}")
+            print(f"  {name:14s} | Train 5-Fold F1: {cv_mean:.4f} (+/- {cv_std:.4f}) | Holdout F1: {holdout_f1:.4f}")
+            print(f"                 -> Saved version: models/versions/{version_filename}")
 
             if hybrid_cv > best_hybrid_cv:
                 best_name, best_hybrid_cv, best_ml_pipe, best_opt_w, best_params = (
                     name, hybrid_cv, tuned_pipeline, opt_w, tuned_params
                 )
 
-    # Holdout report for winning architecture (evaluated strictly on untouched test split)
-    win_holdout_pipe = clone(best_ml_pipe).fit(X_ml_tr, y_tr)
-    win_tri = FourierTriangulator().fit(X_fourier_tr, y_tr)
-    p_hyb = (1.0 - best_opt_w) * win_holdout_pipe.predict_proba(X_ml_te) + best_opt_w * win_tri.predict_proba(X_fourier_te)
-    best_preds = np.argmax(p_hyb, axis=1)
-    holdout_acc = float(accuracy_score(y_te, best_preds))
-    report_str = classification_report(y_te, best_preds, target_names=CLASSES)
-    cm = confusion_matrix(y_te, best_preds)
-
-    print(f"\n--> Winner: Hybrid_{best_name} | Train 5-Fold F1: {best_hybrid_cv:.4f} | Holdout Acc: {holdout_acc*100:.2f}% | Optimal FFT Weight: {best_opt_w:.2f}")
+    # Final holdout evaluation of winning pipeline
+    best_preds = best_pipeline.predict(X_test)
+    print(f"\n--> Winner: {best_name} (Train 5-Fold Macro F1: {best_cv_score:.4f})")
     print("\nHoldout Test Set Classification Report (Evaluated on untouched test split):")
-    print(report_str)
+    print(classification_report(y_test, best_preds, target_names=CLASSES))
     print("Confusion Matrix (Rows = Actual, Columns = Predicted):")
     print(cm)
 
@@ -249,8 +210,8 @@ def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | 
     report_md_path.write_text(md_content)
     latest_md_path.write_text(md_content)
 
-    final_ml = clone(best_ml_pipe).fit(X_ml, y)
-    final_tri = FourierTriangulator().fit(X_fourier, y)
+    # Production model refit on full (X, y) for deployment binary
+    best_pipeline.fit(X, y)
     joblib.dump({
         "model": final_ml,
         "triangulator": final_tri,

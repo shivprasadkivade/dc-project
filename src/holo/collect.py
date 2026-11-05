@@ -15,15 +15,14 @@ def save_sample(save_dir: Path, label: str, waveform: np.ndarray) -> Path:
 
 def collect_single_class(label: str, num_samples: int, threshold: float):
     save_dir = DATA_DIR / label
-    channels = get_input_channels()
     detector = ImpulseDetector(threshold=threshold)
-    print(f"\n[COLLECT - SINGLE CLASS] Recording {num_samples} samples for '{label}' (Channels: {channels})...")
+    print(f"\n[COLLECT - SINGLE CLASS] Recording {num_samples} samples for '{label}'...")
     print("Tap firmly on the target zone whenever ready. Press Ctrl+C to stop.\n")
 
     count = 0
     try:
         with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=1, callback=detector.audio_callback
         ):
             while count < num_samples:
                 waveform = detector.event_queue.get()
@@ -38,14 +37,13 @@ def collect_single_class(label: str, num_samples: int, threshold: float):
     print(f"\nSaved {num_samples} samples inside {save_dir}")
 
 def collect_group_interleaved(samples_per_class: int, threshold: float):
-    channels = get_input_channels()
     detector = ImpulseDetector(threshold=threshold)
     remaining = {c: samples_per_class for c in CLASSES}
     total_needed = samples_per_class * len(CLASSES)
     collected_total = 0
 
     print(f"\n{'='*65}")
-    print(f" [COLLECT - RANDOMIZED GROUP MODE] (Channels: {channels})")
+    print(f" [COLLECT - RANDOMIZED GROUP MODE]")
     print(f" Target: {samples_per_class} samples per class ({total_needed} total across {len(CLASSES)} classes)")
     print(f" Classes will cycle randomly in groups of 3 or 4 taps.")
     print(f" Press Ctrl+C at any time to exit safely.")
@@ -53,7 +51,7 @@ def collect_group_interleaved(samples_per_class: int, threshold: float):
 
     try:
         with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=1, callback=detector.audio_callback
         ):
             while any(v > 0 for v in remaining.values()):
                 active_classes = [c for c, rem in remaining.items() if rem > 0]
@@ -94,22 +92,18 @@ def collect_group_interleaved(samples_per_class: int, threshold: float):
     print(f"Successfully collected all {total_needed} samples across {len(CLASSES)} classes!")
     print(f"{'='*65}\n")
 
-def build_parser() -> argparse.ArgumentParser:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Collect training taps with randomized group interleaving to eliminate session bias"
     )
     parser.add_argument(
         "--label",
-        "--class",
-        dest="label",
         choices=CLASSES + ["all"],
         default="all",
         help="Target class label (default: 'all' runs randomized group interleaving)"
     )
     parser.add_argument(
         "--samples",
-        "--count",
-        dest="samples",
         type=int,
         default=50,
         help="Number of taps to record per class (default: 50)"
@@ -120,10 +114,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=RMS_THRESHOLD,
         help="Mic RMS trigger threshold"
     )
-    return parser
-
-if __name__ == "__main__":
-    parser = build_parser()
     args = parser.parse_args()
 
     if args.label == "all":
