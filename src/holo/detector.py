@@ -25,17 +25,20 @@ class ImpulseDetector:
         # During cooldown, buffer audio but do NOT update background noise floor with tap reverberation
         if self.cooldown > 0:
             self.cooldown -= 1
-            self.pre_buffer.append(mono_block)
+            self.pre_buffer.append(block)
+            # Do NOT update bg_rms during cooldown to avoid absorbing chassis reverberation
             return
 
         if self.capturing:
-            self.captured_blocks.append(mono_block)
-            if len(self.captured_blocks) >= (PRE_BLOCKS + 1 + POST_BLOCKS):
-                full_waveform = np.concatenate(self.captured_blocks)
+            self.captured_blocks.append(block)
+            if len(self.captured_blocks) >= (self.pre_blocks + 1 + self.post_blocks):
+                full_waveform = np.concatenate(self.captured_blocks, axis=0)
+                if full_waveform.ndim == 2 and full_waveform.shape[1] == 1:
+                    full_waveform = full_waveform[:, 0]
                 self.event_queue.put(full_waveform)
                 self.capturing = False
                 self.captured_blocks = []
-                self.cooldown = COOLDOWN_BLOCKS
+                self.cooldown = self.cooldown_blocks
         else:
             dynamic_thresh = max(self.threshold, self.bg_rms * BG_SNR_RATIO)
             # Require both threshold exceeding dynamic floor and sharp crest factor

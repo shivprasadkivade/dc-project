@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 from .config import SAMPLE_RATE, BLOCK_SIZE, RMS_THRESHOLD, DATA_DIR, CLASSES
-from .detector import ImpulseDetector
+from .detector import ImpulseDetector, get_input_channels
 
 def save_sample(save_dir: Path, label: str, waveform: np.ndarray) -> Path:
     save_dir.mkdir(parents=True, exist_ok=True)
