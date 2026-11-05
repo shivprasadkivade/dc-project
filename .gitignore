@@ -19,3 +19,7 @@ dataset/
 .vscode/
 .idea/
 hui
+# Virtual environments
+.venv
+. me
+
