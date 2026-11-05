@@ -1,11 +1,25 @@
-# Python-generated files
+# Python & uv virtual environment
+.venv/
+venv/
 __pycache__/
-*.py[oc]
-build/
+*.py[cod]
+*$py.class
+.pytest_cache/
 dist/
-wheels/
-*.egg-info
+build/
+*.egg-info/
 
+# AcousticTap local datasets and saved model binaries
+dataset/
+*.npy
+*.joblib
+
+# macOS and IDE files
+.DS_Store
+.vscode/
+.idea/
+hui
 # Virtual environments
 .venv
 . me
+
