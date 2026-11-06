@@ -1,254 +1,99 @@
-# AcousticTap: Hybrid Fourier Palm Rest Tap Recognition Using Structure-Borne Acoustics
+# AcousticTap (V2: Hybrid Fourier Triangulation) — Physics-Informed Structure-Borne Tap Recognition
 
-AcousticTap turns the aluminum palm rest of a laptop into programmable macro buttons without adding sensors, contact microphones, or external hardware. By capturing the acoustic transients generated when a finger strikes the chassis, the system classifies tap locations and triggers operating system shortcuts such as Copy and Paste.
-
-In this second generation (V2), we solve the acoustic noise interference problem that affected our baseline machine learning model. We achieve this by combining time-frequency feature extraction with physics-based Fourier Transform triangulation, modeling how mechanical stress waves travel across the laptop chassis.
-
----
-
-## 1. Problem Statement
-
-Most laptop interaction relies entirely on the keyboard and trackpad. The aluminum areas flanking the trackpad remain idle during normal use, while users repeatedly interrupt their typing flow to execute two-key combinations like Cmd+C and Cmd+V.
-
-Adding external hardware (such as capacitive stickers, piezo sensors, or auxiliary microphones) increases cost, adds physical bulk, and makes adoption difficult. The goal of this project is to create virtual tap zones on the palm rest using only the hardware already built into standard laptops.
+> **Project Log — Chapter 2 (`v2-hybrid-fourier` / `main` branch):** This branch documents the second generation of AcousticTap. In Chapter 1 (`v1-baseline-ml`), we built a baseline machine learning system using 70 MFCC and spectral features. While it hit $88.9\%$ accuracy in a quiet room, its false-positive rate spiked to **$46.7\%$ during typing** and **$60.0\%$ in noisy rooms** because standard audio features cannot tell the difference between airborne room noise and a finger striking metal.
+>
+> Here in **V2**, we solve that problem without adding a single piece of hardware—by modeling how mechanical stress waves physically travel and disperse across an aluminum laptop plate, and fusing a 43-dimensional **Fourier Triangulator** with our ML classifier.
 
 ---
 
-## 2. Approach and Hardware Compatibility
+## 1. Where Chapter 1 Left Off: Why Pure ML Hit a Ceiling
 
-### How We Arrived at the Solution
-Tapping an aluminum palm rest sends mechanical stress waves directly through the laptop body. Because the internal microphone is physically mounted inside the chassis, it records both airborne sound and structure-borne vibrations.
+In our `v1-baseline-ml` branch, we treated tap recognition like a classic audio classification problem: capture a $128\text{ ms}$ transient from the MacBook's internal microphone, slice it into onset and decay windows, extract 70 MFCC and spectral features, and feed them into an RBF-SVM or Random Forest.
 
-When you strike the left side of the palm rest, the mechanical wave path to the microphone differs from a strike on the right side. The chassis material, internal battery placement, display hinge, and internal cavities shape the resulting sound. We capture this short acoustic transient, extract frequency and dispersion features, and use a hybrid classifier to identify where the tap occurred.
+When we inspected what the V1 model actually learned, we found its Achilles' heel: **10 of the top 15 features** ranked by Gini importance were `Decay_MFCC` features. Because the classifier relied heavily on the post-strike reverberation tail inside the chassis, anything that corrupted that tail—background conversation, music, or continuous keyboard clatter—caused false triggers.
 
-### Why It Works on Any MacBook Air
-Many acoustic gesture recognition projects require stereo microphone arrays, specialized ultrasound emitters, or high-speed data acquisition boards.
-
-Our system runs on standard single-channel microphone hardware, making it compatible with any standard MacBook Air:
-- It requires only a single microphone channel (`channels: 1`) sampled at standard 44.1 kHz.
-- It does not rely on stereo phase differences or ultrasound emissions.
-- It runs locally on the CPU with inference latency under 6 milliseconds, consuming negligible system resources.
-- It adapts automatically to the host operating system, using `Cmd` shortcuts on macOS and `Ctrl` shortcuts on Windows or Linux.
+Worse, MFCCs treat the internal microphone like an open-air voice recorder. To a pure MFCC model, a sharp click traveling through the air and a finger tap traveling through the aluminum palm rest can look nearly identical in Mel-frequency space. To separate real palm taps from noise, we needed our software to verify the **solid-state physics** of the medium itself.
 
 ---
 
-## 3. Project Objectives
+## 2. Going Back to First Principles: Plate Wave Acoustics
 
-1. Accurately distinguish between left palm rest taps, right palm rest taps, and ambient background noise.
-2. Eliminate false positive triggers caused by typing key clatter, desk thumps, and room conversation.
-3. Maintain low real-time latency so triggering a macro feels instantaneous (under 20 ms end-to-end).
-4. Prevent accidental activations during typing through active keyboard suppression.
-5. Provide a modular pipeline where signal conditioning, feature extraction, and triangulation can be benchmarked independently.
+When your finger strikes a thin metal plate like a MacBook unibody ($h \approx 1.2\text{ mm}$), it doesn't just radiate sound into the room—it excites **flexural Lamb waves** that ripple directly through the solid aluminum sheet toward the internal microphone.
 
----
+In V2, we exploit two physical laws of structure-borne plate acoustics that airborne noise simply cannot fake: **Lamb-wave dispersion** and **spatial resonance modes**.
 
-## 4. Key Libraries Used
-
-The implementation relies on standard Python scientific computing and signal processing libraries:
-
-- **`sounddevice`**: Manages real-time audio input streams with low buffer latency using PortAudio bindings.
-- **`numpy`**: Handles ring buffers, fast vector math, signal windowing, and Fourier transforms.
-- **`librosa`**: Extracts audio features including Mel-Frequency Cepstral Coefficients (MFCCs), spectral centroid, rolloff, flatness, and zero-crossing rates.
-- **`scikit-learn`**: Provides classification algorithms (SVM, Random Forest, Extra Trees), Linear Discriminant Analysis, stratified cross-validation, and performance metrics.
-- **`joblib`**: Serializes trained models, scalers, and fusion pipelines for fast runtime loading.
-- **`pynput`**: Monitors system keyboard events to suppress tap detection while typing, and synthesizes macro keystrokes when a valid tap is detected.
-- **`pyyaml`**: Reads system thresholds, sample rates, and shortcut mappings from a centralized configuration file.
-- **`matplotlib`**: Generates experimental validation figures, comparative spectrograms, and feature importance charts.
-
----
-
-## 5. Why Baseline Machine Learning Was Not Optimal: The Noise Problem
-
-In the baseline version of AcousticTap (`v1-baseline-ml`), we relied solely on generic audio features (MFCCs and spectral moments) fed into classical machine learning classifiers.
-
-While that baseline worked in quiet environments (88.9% accuracy on isolated taps), it degraded rapidly in realistic computer environments:
-1. **Key clatter while typing**: Mechanical key strikes generate sharp acoustic transients that classical time-domain detectors easily mistake for palm taps.
-2. **Desk vibrations**: Moving a mouse, placing a cup, or bumping the desk introduces low-frequency impulses.
-3. **Ambient speech and background sounds**: Sudden airborne noises trigger the amplitude detector.
-
-### Environmental Interference Benchmarks (Baseline ML)
-
-| Test Condition | Environment Description | Overall Accuracy | False Positive Rate (Noise marked as Tap) | Primary Failure Mode |
-| :--- | :--- | :---: | :---: | :--- |
-| **Quiet Room (Baseline)** | Normal desk setting, no background conversation | **88.9%** | 20.0% (3/15) | Ambiguity between left and right palm rest modes |
-| **Active Typing** | Continuous typing on the laptop keyboard during detection | **71.1%** | 46.7% (7/15) | Mechanical key strikes falsely trigger the impulse detector |
-| **Loud Ambient (Cafe / Speech)** | Background speech and music (~65 dB SPL) | **57.8%** | 60.0% (9/15) | Airborne noise distorts spectral centroid and MFCC values |
-
-### Why Pure Machine Learning Models Failed to Solve This
-We evaluated several standard classifiers on these time-frequency features:
-- **Logistic Regression**: Underfit the data because acoustic reverberation paths on a metal plate exhibit non-linear frequency interactions.
-- **Random Forest & Extra Trees**: Performed well on clean training data but memorized ambient background levels, causing accuracy drops when room acoustics shifted.
-- **Support Vector Machines (RBF Kernel)**: Achieved the highest baseline accuracy, but still misclassified key clicks and desk bumps when their spectral envelopes overlapped with tap frequencies.
-
-Generic MFCCs treat the laptop microphone like an open-air audio recorder. They do not model how mechanical stress waves travel across a solid aluminum plate.
-
----
-
-## 6. The V2 Solution: Physical Acoustic Wave Propagation and Fourier Triangulation
-
-To solve the noise interference problem without adding sensors, we looked into plate wave propagation. 
-
-When a mechanical impulse strikes a thin metal plate, it generates flexural waves that propagate through the medium according to physical dispersion laws. We exploit two acoustic phenomena: Lamb-wave dispersion and spatial resonance modes.
-
-```
+```text
                            [Palm Rest Strike]
-                                   │
-              ┌────────────────────┴────────────────────┐
-              ▼                                         ▼
+                                   |
+              +--------------------+--------------------+
+              v                                         v
    [Lamb-Wave Dispersion]                    [Spatial Resonance Modes]
    High frequencies travel faster            Chassis boundaries produce 
    than low frequencies                      distinct nodal frequency bands
    (Delta t_disp = t_LF - t_HF)              (Left: 129 Hz, Right: 172 Hz)
-              │                                         │
-              └────────────────────┬────────────────────┘
-                                   │
-                                   ▼
+              |                                         |
+              +--------------------+--------------------+
+                                   |
+                                   v
                       [Fourier Triangulation]
                       43-Dimensional Physical
                       Acoustic Feature Vector
 ```
 
-### 1. Lamb-Wave Dispersion Physics
-When a finger strikes the aluminum palm rest, the direct mechanical impact excites flexural Lamb waves in the metal unibody. Because the plate thickness ($h \approx 1.2$ mm) is comparable to acoustic wavelengths at high frequencies, flexural wave velocity depends directly on frequency:
+### 2.1 Lamb-Wave Dispersion Physics
+In open air, sound is a non-dispersive compression wave: whether a sound is $200\text{ Hz}$ or $10,000\text{ Hz}$, it travels at roughly $343\text{ m/s}$ and reaches the microphone at the exact same instant.
 
-$$v_{phase}(\omega) = \sqrt{\frac{\omega \cdot h}{2} \cdot \sqrt{\frac{E}{3\rho(1-\nu^2)}}}$$
+A thin metal plate behaves completely differently. Because the aluminum palm rest's thickness ($h \approx 1.2\text{ mm}$) is small relative to the bending wavelength, flexural Lamb waves are **dispersive**—meaning their propagation speed depends directly on their frequency $\omega$:
 
-where $E$ is Young's modulus of aluminum (70 GPa), $\rho$ is density ($2700 \text{ kg/m}^3$), and $\nu$ is Poisson's ratio (0.33).
+$$v_{\text{phase}}(\omega) = \sqrt{\frac{\omega \cdot h}{2} \cdot \sqrt{\frac{E}{3\rho(1-\nu^2)}}}$$
 
-Because phase velocity increases with frequency, high-frequency wave components (3 kHz to 14 kHz) travel faster than low-frequency components (150 Hz to 900 Hz). This produces a measurable dispersion arrival delay $\Delta t_{disp} = t_{LF} - t_{HF}$ at the microphone.
+where $E$ is Young's modulus for aluminum ($70\text{ GPa}$), $\rho$ is density ($2700\text{ kg/m}^3$), and $\nu$ is Poisson's ratio ($0.33$).
 
-Airborne sounds (room speech, music) travel through air at ~343 m/s as pure compression waves without plate flexure. They show near-zero dispersion delay ($\Delta t_{disp} \approx 0$). This provides a physical test to reject airborne noise before it reaches the classifier.
+Because $v_{\text{phase}}(\omega) \propto \sqrt{\omega}$, **high-frequency wave packets ($3\text{ kHz}$ to $14\text{ kHz}$) race through the aluminum plate much faster than low-frequency bending waves ($150\text{ Hz}$ to $900\text{ Hz}$)**. By the time the vibration reaches the internal microphone, it exhibits a measurable arrival time lag:
 
-### 2. Spatial Resonance Mode Distribution
-The internal structure of the MacBook (battery packs, trackpad frame, display hinge, speaker grilles) forms boundary conditions that shape resonant standing waves. 
+$$\Delta t_{\text{disp}} = t_{\text{LF}} - t_{\text{HF}}$$
 
-By computing the Fast Fourier Transform (FFT) across a 1024-sample post-transient window, we divide the spectrum into 12 log-spaced spatial resonance bands (150 Hz to 16 kHz):
-- **Left Palm Taps** excite dominant resonance modes at **129 Hz**, coupling strongly into lower chassis flexure modes.
-- **Right Palm Taps** excite dominant resonance modes at **172 Hz**, producing elevated energy in mid-frequency resonance bands.
+- **Airborne Noise (Voices, Music, Distant Clatter):** Travels through air at constant speed $\rightarrow \Delta t_{\text{disp}} \approx 0$.
+- **Structure-Borne Tap:** Travels through the dispersive metal plate $\rightarrow$ produces a distinct, non-zero $\Delta t_{\text{disp}}$ signature that depends on the exact distance from the tap zone to the microphone.
 
-Sub-band energy ratios and group delays provide a 43-dimensional physical acoustic fingerprint that separates left taps from right taps regardless of strike force.
+### 2.2 Spatial Resonance Mode Distribution
+The inside of a MacBook Air is an asymmetric mechanical maze: battery cells sit at the front, the trackpad cutout interrupts the center of the top case, the display hinge stiffens the rear wall, and speaker cavities sit on the flanks. 
 
-### 3. Fourier Triangulator Classifier
-The Fourier branch computes a 43-dimensional vector (12 onset band energies, 12 wake band energies, 11 sub-band ratios, Lamb dispersion lag, HF/LF energy ratio, group delays, and signal-to-noise ratio). 
-
-This vector is evaluated by `FourierTriangulator`, which combines:
-- **Linear Discriminant Analysis (LDA)** with automatic shrinkage, projecting spatial features into a discriminative subspace.
-- **Cosine Similarity Template Matching** with temperature calibration ($T = 2.5$) against calibrated spatial centroids.
-
-The Fourier branch outputs its own independent class probabilities:
-
-$$P_{Fourier} = \alpha P_{LDA} + (1 - \alpha) P_{Cosine}$$
+When we compute a 1024-sample Fast Fourier Transform (FFT) over the post-transient window and slice the spectrum into **12 log-spaced resonance bands ($150\text{ Hz}$ to $16\text{ kHz}$)**, those internal boundaries act like the frets on a guitar:
+- **Left Palm Taps** couple strongly into the lower chassis flexure mode, peaking at **$129\text{ Hz}$**.
+- **Right Palm Taps** excite a stiffer boundary path across the chassis, shifting the dominant resonant mode up to **$172\text{ Hz}$** and preserving significantly more energy across mid-to-high resonance bands.
 
 ---
 
-## 7. The Hybrid Architecture: Probability Fusion
+## 3. Experimental Proofs of the Physics Engine
 
-Rather than discarding the baseline machine learning model, V2 runs both pipelines in parallel on the same captured transient:
+To verify that our physical equations held up on real hardware, we ran controlled wave-propagation benchmarks on Apple Silicon MacBook hardware.
 
-```
-                          [Chassis Transient (128 ms)]
-                                       │
-                   ┌───────────────────┴───────────────────┐
-                   ▼                                       ▼
-      [ML Feature Extraction]                 [Fourier Triangulation]
-      70 Dimensions:                          43 Dimensions:
-      - 20 Onset MFCCs                        - 12 Log Onset Bands
-      - 20 Decay MFCCs                        - 12 Log Wake Bands
-      - 20 Std MFCCs                          - 11 Sub-band Ratios
-      - Spectral Centroid, Rolloff,           - Lamb Dispersion Delay (Delta t)
-        Flatness, Crest Factor, ADR           - HF/LF Energy Ratio & Group Delay
-                   │                                       │
-                   ▼                                       ▼
-      [Tuned ML Classifier]                   [Fourier Triangulator]
-      (RBF-SVM / Random Forest)               (LDA + Cosine Temperature)
-                   │                                       │
-                   ▼                                       ▼
-             P_ML Probabilities                   P_Fourier Probabilities
-                   │                                       │
-                   └───────────────────┬───────────────────┘
-                                       │
-                                       ▼
-                           [Probability Blending]
-                     P_hybrid = (1 - w)*P_ML + w*P_Fourier
-                                       │
-                                       ▼
-                           [Confidence & Suppression]
-                         Threshold >= 0.70 & No Typing
-                                       │
-                                       ▼
-                            [Dispatch OS Shortcut]
-                              (Cmd+C / Cmd+V)
-```
+### 3.1 Proof 1: Lamb-Wave Dispersion & Arrival Timing Measurements
 
-The combined probability vector is computed as:
-
-$$P_{hybrid} = (1 - w) \cdot P_{ML} + w \cdot P_{Fourier}$$
-
-During training, the fusion weight $w$ is searched over a cross-validation grid (`weight_search_grid`). The weight yielding the highest macro F1 score is selected (typically $w \approx 0.50$, giving balanced weight to physical acoustics and pattern recognition).
-
----
-
-## 8. Experimental Validation and Sub-Report Integration
-
-To provide a complete evaluation for an academic committee or course instructor, this section integrates the full experimental measurements and data tables from our benchmark validation runs conducted on Apple Silicon hardware (Darwin arm).
-
-### 8.1 Real-Time Pipeline Latency Breakdown
-Measured across 100 benchmark iterations on Apple Silicon running Darwin 27.0.0:
-
-| Pipeline Stage | Implementation Details | Mean (ms) | Std Dev (ms) | 95th Percentile (ms) |
-| :--- | :--- | :---: | :---: | :---: |
-| **0. Hardware Buffer Acquisition** | 512 samples @ 44.1 kHz (Single audio block) | **11.61** | *Fixed* | 11.61 |
-| **1. Transient Impulse Detection** | Ring buffer RMS check + dynamic EMA floor | 0.021 | 0.004 | 0.024 |
-| **2. Peak Alignment & Windowing** | Asymmetric cosine onset window (peak @ 32) | 0.047 | 0.004 | 0.049 |
-| **3. Audio Feature Extraction** | 20 MFCCs (attack/decay) + Spectral Dynamics | 1.424 | 0.027 | 1.453 |
-| **4. Classifier Inference** | Model probability prediction (`RandomForest`) | 3.838 | 0.083 | 3.924 |
-| **5. Macro & Suppression Logic** | Active keyboard check & shortcut routing | 0.001 | 0.000 | 0.001 |
-| | | | | |
-| **Total Algorithmic Processing** | CPU calculation time | **5.33 ms** | ±0.11 ms | 6.40 ms |
-| **Total End-to-End Latency** | Physical finger strike to OS key dispatch | **16.94 ms** | ±0.03 ms | 18.01 ms |
-
-#### Real-Time Budget Evaluation
-- **Human Tactile Perception Threshold:** ~50.0 ms
-- **Standard Real-Time Audio Deadline:** 20.0 ms
-- **AcousticTap Latency Margin:** **3.06 ms headroom** under the 20 ms interactive limit.
-
-The total algorithmic processing time of 5.33 ms demonstrates that the system operates well within interactive real-time bounds.
-
----
-
-### 8.2 Comparative Spectrogram Analysis
-
-![Comparative Spectrograms](reports/spectrogram_comparison.png)
-
-#### Key Observations
-1. **Spatial Modal Shift:** Left and Right palm rest taps exhibit distinct structural resonance bands in the 150 Hz to 2500 Hz range. The strike closer to the internal microphone displays higher low-frequency energy coupling.
-2. **Separation from Key Typing:** Keyboard strikes (spacebar) generate wide-bandwidth airborne clicks extending well above 8 kHz, whereas palm rest taps concentrate mechanical energy within low-frequency chassis flexure modes.
-
----
-
-### 8.3 Lamb-Wave Dispersion and Arrival Timing Differences
-
-Because the internal microphone sits at an asymmetric position relative to the left and right palm rests, mechanical wave propagation paths differ. We measured arrival characteristics across both taps on Apple Silicon hardware:
+Because the internal microphone is positioned asymmetrically relative to the left and right palm rests, the wave travel distances—and therefore the dispersion delays—are sharply distinct between the two sides:
 
 | Acoustic Timing Metric | Left Palm Rest Tap | Right Palm Rest Tap | Difference (Left vs Right) | Physical Interpretation |
 | :--- | :---: | :---: | :---: | :--- |
-| **High-Frequency Arrival ($t_{HF}$)** | **0.77 ms** | **4.13 ms** | **3.36 ms** | Direct ballistic wave reaches internal microphone first |
-| **Low-Frequency Arrival ($t_{LF}$)** | **0.91 ms** | **0.88 ms** | 0.02 ms | Dispersive bending wave arrives with delayed envelope peak |
-| **Lamb Dispersion Delay ($\Delta t_{disp}$)** | **0.14 ms** | **-3.24 ms** | **3.38 ms** | Propagation distance to mic alters frequency group velocity |
-| **Low-Band Group Delay ($\tau_{low}$)** | 0.46 samples | 0.61 samples | 0.15 samples | Low-frequency plate resonance boundary phase delay |
-| **Mid-Band Group Delay ($\tau_{mid}$)** | 0.51 samples | 0.81 samples | 0.30 samples | Transition region dispersion phase delay |
+| **High-Frequency Arrival ($t_{\text{HF}}$)** | **0.77 ms** | **4.13 ms** | **3.36 ms** | Direct ballistic wave reaches internal microphone first |
+| **Low-Frequency Arrival ($t_{\text{LF}}$)** | **0.91 ms** | **0.88 ms** | 0.02 ms | Dispersive bending wave arrives with delayed envelope peak |
+| **Lamb Dispersion Delay ($\Delta t_{\text{disp}}$)** | **0.14 ms** | **-3.24 ms** | **3.38 ms** | Propagation distance to mic alters frequency group velocity |
+| **Low-Band Group Delay ($\tau_{\text{low}}$)** | 0.46 samples | 0.61 samples | 0.15 samples | Low-frequency plate resonance boundary phase delay |
+| **Mid-Band Group Delay ($\tau_{\text{mid}}$)** | 0.51 samples | 0.81 samples | 0.30 samples | Transition region dispersion phase delay |
 
 ![Arrival Timing & Dispersion](reports/fourier_dispersion_timing.png)
 
-High-frequency wave packets arrive at 0.77 ms for a left tap versus 4.13 ms for a right tap. This 3.36 ms difference provides a physical indicator of tap origin before any machine learning classifier is consulted.
+Look at the first two plots in the figure above:
+- On a **Left Palm Tap**, the high-frequency wave packet (solid blue line) hits the microphone almost immediately at **$0.77\text{ ms}$**, slightly ahead of the low-frequency envelope peak at $0.91\text{ ms}$ ($\Delta t_{\text{disp}} = 0.14\text{ ms}$).
+- On a **Right Palm Tap**, the high-frequency wave packet has to traverse the trackpad cutout boundary and arrives at **$4.13\text{ ms}$**—a **$3.36\text{ ms}$ timing separation** that tells us which side of the laptop was struck before a machine learning tree even looks at an MFCC.
 
 ---
 
-### 8.4 Spatial Resonance Frequency Distribution Across 12 Bands
+### 3.2 Proof 2: 12-Band Spatial Resonance Profile
 
-Striking the left palm rest excites different unibody vibration modes than the right palm rest due to the internal battery boundaries, speaker cavities, and trackpad cutouts.
+Next, we measured the log-energy distribution ($\log_{10} V^2$) across all 12 spatial resonance bands to see how the unibody geometry shapes left versus right strikes:
 
-| Resonance Band | Frequency Range (Hz) | Left Tap Energy ($log_{10} V^2$) | Right Tap Energy ($log_{10} V^2$) | Energy Difference ($\Delta$ dB) | Dominant Strike Side |
+| Resonance Band | Frequency Range (Hz) | Left Tap Energy ($\log_{10} V^2$) | Right Tap Energy ($\log_{10} V^2$) | Energy Difference ($\Delta$ dB) | Dominant Strike Side |
 | :---: | :---: | :---: | :---: | :---: | :--- |
 | **Band 01** | 150 - 221 Hz | **3.30** | **3.54** | **-0.24 dB** | **RIGHT** |
 | **Band 02** | 221 - 326 Hz | **2.89** | **2.85** | **+0.04 dB** | **BALANCED** |
@@ -265,67 +110,81 @@ Striking the left palm rest excites different unibody vibration modes than the r
 
 ![Frequency Spectrum & Spatial Resonance](reports/fourier_frequency_spectrum.png)
 
-#### Resonant Peak Observations
-- **Left Palm Tap Resonant Peak:** **129 Hz**
-- **Right Palm Tap Resonant Peak:** **172 Hz**
-
-The measured spectral differences show that right taps deliver higher relative energy in bands 7 through 12, reflecting reduced acoustic damping along the right internal chassis boundary.
+#### What the Spectrum Shows
+- **Distinct Fundamental Modes:** The top FFT overlay confirms the modal shift between the **Left Palm Tap peak ($129\text{ Hz}$)** and the **Right Palm Tap peak ($172\text{ Hz}$)**.
+- **High-Band Differential Signature:** As shown in the bottom differential plot ($\Delta\text{ Energy} = \text{Left} - \text{Right}$), bands 7 through 12 ($1.55\text{ kHz}$ to $16\text{ kHz}$) exhibit a consistent $-0.59\text{ dB}$ to $-1.27\text{ dB}$ differential in favor of the right palm rest. By taking **adjacent sub-band energy ratios**, we create a spatial fingerprint that remains constant whether you tap lightly or firmly.
 
 ---
 
-### 8.5 Statistical Feature Importance and ANOVA Discrimination Rankings
+## 4. The V2 Hybrid Architecture: Probability Fusion
 
-We analyzed feature contributions across the 70 extracted dimensions using Random Forest Gini importance and ANOVA F-tests:
+Instead of throwing away our V1 machine learning pipeline, we built a **dual-branch hybrid architecture**. Every captured $128\text{ ms}$ transient is evaluated simultaneously by both the time-frequency ML branch and the physics-based `FourierTriangulator` branch.
 
-| Rank | Feature Name | Domain Category | Random Forest Importance | ANOVA F-Score | Physical Interpretation |
-| :---: | :--- | :--- | :---: | :---: | :--- |
-| **#01** | `Decay_MFCC_08` | Resonance Decay | **8.24%** | 31.8 | Cavity resonance and speaker grille boundary reflections. |
-| **#02** | `Decay_MFCC_07` | Resonance Decay | **6.74%** | 472.6 | Cavity resonance and speaker grille boundary reflections. |
-| **#03** | `Decay_MFCC_03` | Resonance Decay | **5.05%** | 307.7 | Cavity resonance and speaker grille boundary reflections. |
-| **#04** | `Decay_MFCC_11` | Resonance Decay | **5.01%** | 146.8 | Cavity resonance and speaker grille boundary reflections. |
-| **#05** | `Std_MFCC_02` | Spectral Variance | **4.23%** | 229.1 | Frequency variation over time across the impact window. |
-| **#06** | `Onset_MFCC_12` | Onset Attack | **4.15%** | 95.0 | Ballistic strike energy distribution before chassis reflections. |
-| **#07** | `Decay_MFCC_17` | Resonance Decay | **4.15%** | 433.5 | Cavity resonance and speaker grille boundary reflections. |
-| **#08** | `Decay_MFCC_12` | Resonance Decay | **4.02%** | 235.6 | Cavity resonance and speaker grille boundary reflections. |
-| **#09** | `Decay_MFCC_02` | Resonance Decay | **3.67%** | 67.7 | Cavity resonance and speaker grille boundary reflections. |
-| **#10** | `Onset_MFCC_11` | Onset Attack | **3.54%** | 165.6 | Ballistic strike energy distribution before chassis reflections. |
-| **#11** | `Onset_MFCC_07` | Onset Attack | **3.43%** | 128.8 | Ballistic strike energy distribution before chassis reflections. |
-| **#12** | `Decay_MFCC_10` | Resonance Decay | **3.14%** | 315.7 | Cavity resonance and speaker grille boundary reflections. |
-| **#13** | `Decay_MFCC_15` | Resonance Decay | **2.80%** | 187.5 | Cavity resonance and speaker grille boundary reflections. |
-| **#14** | `Decay_MFCC_04` | Resonance Decay | **2.65%** | 161.0 | Cavity resonance and speaker grille boundary reflections. |
-| **#15** | `Onset_MFCC_17` | Onset Attack | **2.59%** | 217.5 | Ballistic strike energy distribution before chassis reflections. |
+### Inside the `FourierTriangulator` (43 Dimensions)
+Our new module (`src/holo/triangulation.py`) extracts a 43-dimensional physical vector:
+- **12 Log-Spaced Onset Band Energies** + **12 Wake Band Energies**
+- **11 Adjacent Sub-Band Energy Ratios** (force-invariant modal shape)
+- **Lamb-Wave Dispersion Delay ($\Delta t_{\text{disp}}$)**, $t_{\text{HF}}$, and $t_{\text{LF}}$
+- **HF/LF Energy Ratio**, **Spectral Group Delays ($\tau_{\text{low}}, \tau_{\text{mid}}$)**, and **Transient SNR**
 
-![Feature Importance Ranking](reports/feature_importance.png)
+The `FourierTriangulator` evaluates this vector using two complementary estimators:
+1. **Linear Discriminant Analysis (LDA)** with automatic covariance shrinkage, projecting the 43 physical features into a maximally separable subspace.
+2. **Cosine Similarity Template Matching** with temperature scaling ($T = 2.5$) against calibrated spatial centroids for Left Tap, Right Tap, and Noise.
 
-#### Analytical Findings
-1. **Onset Dominance:** The initial impact frames account for over 40% of the total model decision weight, isolating the initial direct-wave arrival before multiple room reflections interfere.
-2. **Attack-to-Decay Ratio & Crest Factor:** Effectively filter out continuous background noise and soft resting of palms on the chassis.
-3. **Mel-Scale Normalization:** Normalizing energy within Mel bands makes classification robust across varying strike intensities.
+The Fourier branch outputs its own calibrated probability distribution:
+
+$$P_{\text{Fourier}} = \alpha P_{\text{LDA}} + (1 - \alpha) P_{\text{Cosine}}$$
+
+### Dual-Branch Probability Blending
+
+```text
+                         [Chassis Transient (128 ms)]
+                                      |
+                   +------------------+------------------+
+                   v                                     v
+     [ML Feature Extraction]               [Fourier Triangulation]
+     70 Dimensions:                        43 Dimensions:
+     - 20 Onset MFCCs                      - 12 Log Onset Bands
+     - 20 Decay MFCCs                      - 12 Log Wake Bands
+     - 20 Std MFCCs                        - 11 Sub-band Ratios
+     - Spectral Centroid, Rolloff,         - Lamb Dispersion Delay (Delta t)
+       Flatness, Crest Factor, ADR         - HF/LF Energy Ratio & Group Delay
+                   |                                     |
+                   v                                     v
+     [Tuned ML Classifier]                 [Fourier Triangulator]
+     (RBF-SVM / Random Forest)             (LDA + Cosine Temperature)
+                   |                                     |
+                   v                                     v
+            P_ML Probabilities                 P_Fourier Probabilities
+                   |                                     |
+                   +------------------+------------------+
+                                      |
+                                      v
+                           [Probability Blending]
+                     P_hybrid = (1 - w)*P_ML + w*P_Fourier
+                                      |
+                                      v
+                         [Confidence & Suppression]
+                         Threshold >= 0.70 & No Typing
+                                      |
+                                      v
+                           [Dispatch OS Shortcut]
+                             (Cmd+C / Cmd+V)
+```
+
+At inference time, the system blends the class probabilities from both branches:
+
+$$P_{\text{hybrid}} = (1 - w) \cdot P_{\text{ML}} + w \cdot P_{\text{Fourier}}$$
+
+During training (`src/holo/train.py`), a 5-fold stratified cross-validation grid search (`weight_search_grid`) automatically sweeps candidate classifiers and fusion weights $w \in [0.0, 1.0]$. In our production benchmark, the optimizer converged on **$w = 0.50$ (`Hybrid_SVM_RBF`)**—giving an exact 50/50 vote to statistical pattern recognition and plate-wave physics.
 
 ---
 
-### 8.6 Surface Boundary Damping & Contact Medium Experiments
+## 5. V2 Holdout Validation: Did Physics Fix the Noise Crisis?
 
-Laptop contact surfaces alter structural resonance by introducing acoustic absorption at the bottom case:
+We evaluated the complete V2 hybrid architecture across **589 recorded acoustic events** on a MacBook Air, holding out a stratified 20% test set (118 samples) that the models and fusion grid never saw during training.
 
-| Surface Condition | Acoustic Boundary Physics | Resonance Decay ($T_{60}$) | Attack/Decay Ratio | Classification Accuracy | Failure Mode / Observation |
-| :--- | :--- | :---: | :---: | :---: | :--- |
-| **Hard Wooden Desk** | Rigid boundary. Minimal chassis absorption, high structural ringing. | **13.8 ms** | **7.8 dB** | **88.9%** | Optimal baseline. Clear separation between onset and reverberation decay. |
-| **Soft Mousepad / Mat** | Viscoelastic boundary. Neoprene absorbs high-frequency chassis flexure. | **10.6 ms** | **10.3 dB** | **82.2%** | Decay tail attenuated by ~30%. Slight drop in right-tap resonance distinction. |
-| **User Lap (Fabric / Flesh)** | High mechanical damping. Body tissue absorbs bottom case vibrations. | **7.1 ms** | **13.4 dB** | **75.6%** | Resonance decay squashed quickly. High-confidence taps require firmer strike. |
-
-#### Surface Boundary Takeaways
-1. **Mechanical Decoupling:** Soft surfaces act as mechanical dampers, reducing cavity reverberation duration by over 50%.
-2. **Onset Window Protection:** Because AcousticTap evaluates the onset transient attack (first 5.8 ms) separately from the decay tail, the system remains usable across different resting surfaces without requiring separate models.
-3. **Operational Recommendation:** Resting the laptop on a rigid surface provides the most consistent acoustic separation.
-
----
-
-### 8.7 Holdout Test Set Confusion Matrix and Classification Metrics
-
-We evaluated the hybrid architecture on a dataset of 589 recorded events collected on a MacBook Air palm rest.
-
-#### Confusion Matrix (Holdout Test Set, 118 samples)
+### Holdout Confusion Matrix (118 Samples)
 
 | Actual \ Predicted | Predicted Left Tap | Predicted Right Tap | Predicted Noise | Total Actual |
 | :--- | :---: | :---: | :---: | :---: |
@@ -334,128 +193,122 @@ We evaluated the hybrid architecture on a dataset of 589 recorded events collect
 | **Actual Noise** | 2 | 3 | **30** | 35 |
 | **Total Predicted** | 39 | 44 | 35 | 118 |
 
-#### Classification Metrics Table
+### Holdout Classification Metrics
 
 | Class | Precision | Recall | F1-Score | Support |
 | :--- | :---: | :---: | :---: | :---: |
 | **Left Tap** | 0.923 | 0.837 | 0.878 | 43 |
-| **Right Tap** | 0.886 | 0.975 | 0.929 | 40 |
+| **Right Tap** | 0.886 | **0.975** | **0.929** | 40 |
 | **Noise** | 0.857 | 0.857 | 0.857 | 35 |
 | | | | | |
 | **Overall Accuracy** | | | **0.8898** | 118 |
-| **Macro Average** | 0.889 | 0.890 | 0.888 | 118 |
-| **Weighted Average** | 0.891 | 0.890 | 0.889 | 118 |
+| **Macro Average** | 0.889 | 0.890 | **0.888** | 118 |
+| **Weighted Average** | 0.891 | 0.890 | **0.889** | 118 |
 
 - **5-Fold Stratified Cross-Validation Macro F1:** `0.8771`
-- **Winning Architecture:** `Hybrid_SVM_RBF` (50% ML + 50% Fourier Triangulation)
-- **Best Tuned Hyperparameters:** `{'clf__C': 5.0, 'clf__class_weight': {0: 1.3, 1: 1.0, 2: 1.0}, 'clf__gamma': 'scale'}`
+- **Winning Production Architecture:** `Hybrid_SVM_RBF` ($50\%$ Tuned RBF-SVM + $50\%$ Fourier Triangulator)
+- **Best Tuned SVM Hyperparameters:** `{'clf__C': 5.0, 'clf__class_weight': {0: 1.3, 1: 1.0, 2: 1.0}, 'clf__gamma': 'scale'}`
 
-#### Why Noise False Positives Dropped from 46.7% to Under 8.5%
-In active typing tests, false positive triggers dropped from 46.7% in the baseline model to under 8.5% in the hybrid model. Mechanical key clicks lack the characteristic plate dispersion delay ($\Delta t_{disp} \approx 0$) and do not match the 12-band chassis resonance template. As a result, the Fourier branch outputs near-zero tap probabilities, preventing false triggers.
+### The Headline Result: Active-Typing False Positives Dropped from 46.7% to < 8.5%
+While our clean holdout accuracy remained near $89.0\%$ (with Right Tap recall climbing to **$97.5\%$**), the real breakthrough happened during live typing and noisy-room stress tests:
+- In V1 (`v1-baseline-ml`), **46.7% of background noise events during typing** falsely triggered a tap macro.
+- In V2 (`v2-hybrid-fourier`), **false positives dropped below 8.5%**.
+
+**Why?** When a stray key click or airborne voice hits the microphone, the ML branch might still get tricked into outputting a moderate tap probability (say, $P_{\text{ML}} \approx 0.65$). However, because that sound wave lacks a plate dispersion lag ($\Delta t_{\text{disp}} \approx 0$) and fails the 12-band chassis resonance template, the `FourierTriangulator` vetoes it with near-zero tap probability ($P_{\text{Fourier}} < 0.10$), pulling the blended $P_{\text{hybrid}}$ well below the $0.70$ trigger threshold.
 
 ---
 
-## 9. How to Use
+## 6. How to Use V2 (`v2-hybrid-fourier`)
 
 ### Setup
-Install project dependencies with `uv`:
+Install all dependencies using `uv`:
 ```bash
 uv sync
 ```
 
 ### 1. Data Collection
-Collect training samples using either randomized group mode or single-class mode.
-
-Group interleaved collection (cycles randomly in bursts of 3 to 4 taps to eliminate session bias):
+Record training samples using interleaved group mode (cycles randomly in bursts of 3 to 4 taps to prevent session-level background bias) or single-class mode:
 ```bash
+# Group interleaved mode (recommended):
 uv run python -m src.holo.collect --label all --samples 50
-```
 
-Single-class collection:
-```bash
+# Single-class mode:
 uv run python -m src.holo.collect --label left_tap --samples 50
 uv run python -m src.holo.collect --label right_tap --samples 50
 uv run python -m src.holo.collect --label noise --samples 50
 ```
+*(Note: CLI flags also support `--class` as an alias for `--label` and `--count` for `--samples`.)*
 
-*CLI flags support cross-compatible aliases (`--class` for `--label`, `--count` for `--samples`).*
-
-### 2. Hybrid Model Training and Benchmarking
-Train and benchmark all hybrid architectures (SVM, Random Forest, Extra Trees, each combined with the Fourier branch):
+### 2. Hybrid Model Training & Fusion Grid Search
+Train and benchmark all candidate hybrid models (RBF-SVM, Random Forest, Extra Trees paired with the `FourierTriangulator`):
 ```bash
 uv run python -m src.holo.train --features enhanced
 ```
 
-To fix the Fourier fusion weight instead of auto-tuning (for example, 50% ML and 50% Fourier):
+If you want to lock in a manual Fourier fusion weight $w$ instead of running the automated grid search (e.g., $w = 0.50$):
 ```bash
 uv run python -m src.holo.train --features enhanced --fourier-weight 0.50
 ```
+Training automatically evaluates 5-fold cross-validation macro F1 across all models and fusion weights, saves a timestamped bundle in `models/`, updates `models/leaderboard.csv`, and promotes the winning pipeline to production.
 
-Training automatically:
-- Evaluates 5-fold cross-validation F1 across candidate classifiers and fusion weights.
-- Generates a timestamped candidate bundle in `models/`.
-- Updates `models/leaderboard.csv`.
-- Saves the winning production model for the listener daemon.
-
-### 3. Model Evaluation
-Evaluate the production model on the holdout test set:
+### 3. Holdout Evaluation
+Run evaluation on the holdout test split:
 ```bash
 uv run python -m src.holo.evaluate --holdout-only
 ```
 
 ### 4. Live Listener Daemon
-Test live predictions safely in dry-run mode (logs predictions without dispatching OS keystrokes):
+Test live hybrid recognition safely in dry-run mode (logs both $P_{\text{ML}}$, $P_{\text{Fourier}}$, and blended predictions without sending OS shortcuts):
 ```bash
 uv run python -m src.holo.listen --dry-run
 ```
 
-Run the live listener daemon:
+Launch the active background macro listener:
 ```bash
 uv run python -m src.holo.listen --confidence 0.70
 ```
-- Left palm rest tap triggers **Copy** (`Cmd+C` on macOS, `Ctrl+C` on Windows/Linux).
-- Right palm rest tap triggers **Paste** (`Cmd+V` on macOS, `Ctrl+V` on Windows/Linux).
+- **Left Palm Rest Tap** $\rightarrow$ Dispatches **Copy** (`Cmd+C` on macOS, `Ctrl+C` on Windows/Linux).
+- **Right Palm Rest Tap** $\rightarrow$ Dispatches **Paste** (`Cmd+V` on macOS, `Ctrl+V` on Windows/Linux).
 
-### 5. Running the Automated MacBook Validation Suite
-MacBook users can re-run the complete benchmark validation suite locally:
+### 5. Automated MacBook Benchmark & Physics Validation Suite
+You can regenerate all dispersion plots, 12-band spectrum charts, and markdown sub-reports on your own MacBook:
 ```bash
-# Automated run (generates all reports in ~5 seconds):
+# Fast automated benchmark run (~5 seconds):
 uv run python benchmark_report.py
 
-# Interactive guided run (prompts you to tap your MacBook step-by-step):
+# Interactive hardware run (prompts you to tap your palm rests live):
 uv run python benchmark_report.py --interactive
 ```
-
-For complete setup instructions, macOS microphone permission guidance, and troubleshooting, see [`MAC_TESTER_GUIDE.md`](MAC_TESTER_GUIDE.md).
+For macOS microphone permissions and tester troubleshooting, see [`MAC_TESTER_GUIDE.md`](MAC_TESTER_GUIDE.md).
 
 ---
 
-## 10. Repository Structure & Generated Artifacts
+## 7. V2 Repository Structure & Generated Artifacts
 
-```
-├── MAC_TESTER_GUIDE.md           # Instructions for MacBook testers
-├── README.md                     # Comprehensive academic report and project documentation
-├── benchmark_report.py           # Automated experimental benchmark suite
-├── pyproject.toml                # Project metadata and dependencies
-├── dataset/                      # Recorded .npy audio transient files
-├── models/                       # Trained models, versioned bundles, and leaderboard
-├── reports/                      # Experimental reports and benchmark figures
-│   ├── feature_importance.md     # Full ANOVA and Gini importance ranking table
-│   ├── feature_importance.png    # Top 15 discriminative feature bar chart
-│   ├── fourier_analysis_report.md# Lamb-wave dispersion and 12-band spectral analysis
-│   ├── fourier_dispersion_timing.png # Wave envelope arrival timing plot
-│   ├── fourier_frequency_spectrum.png# 12-band spatial resonance distribution plot
-│   ├── instructor_expansion_report.md# Consolidated experimental master report
-│   ├── latency_breakdown.md      # Detailed real-time pipeline latency table
-│   ├── spectrogram_comparison.png# Left vs Right vs Key Strike comparative spectrogram
-│   └── surface_damping_analysis.md# Surface boundary condition experiment data
-└── src/holo/                     # Core source code
-    ├── config.py                 # Configuration loader and constants
-    ├── detector.py               # Pre-trigger transient ring buffer detector
-    ├── features.py               # Short-window MFCC and spectral feature extraction
-    ├── triangulation.py          # Fourier Transform dispersion and spatial triangulation
-    ├── collect.py                # Interactive sample collection CLI
-    ├── train.py                  # Dual-branch training, hyperparameter tuning, fusion search
-    ├── evaluate.py               # Holdout evaluation and confusion matrix reporting
-    └── listen.py                 # Low-latency listener daemon with typing suppression
+```text
+├── MAC_TESTER_GUIDE.md                  # Instructions and troubleshooting for MacBook testers
+├── README.md                            # Chapter 2: Hybrid Fourier documentation (this file)
+├── benchmark_report.py                  # Automated physics & latency benchmark suite
+├── pyproject.toml                       # Project metadata and uv dependencies
+├── dataset/                             # Recorded .npy structure-borne transient files
+├── models/                              # Versioned hybrid model bundles and leaderboard.csv
+├── reports/                             # Experimental sub-reports and physics figures
+│   ├── fourier_analysis_report.md       # Lamb-wave dispersion & 12-band spectral data
+│   ├── fourier_dispersion_timing.png    # High/Low frequency wave arrival & group delay plot
+│   ├── fourier_frequency_spectrum.png   # 12-band spatial resonance & differential plot
+│   ├── instructor_expansion_report.md   # Consolidated master experimental report
+│   ├── feature_importance.md            # Baseline 70-feature ANOVA & Gini ranking table
+│   ├── feature_importance.png           # Top 15 ML feature importance bar chart
+│   ├── latency_breakdown.md             # Stage-by-stage real-time latency profile
+│   ├── spectrogram_comparison.png       # Left vs. Right vs. Spacebar spectrogram comparison
+│   └── surface_damping_analysis.md      # Desk vs. Mousepad vs. Lap boundary experiments
+└── src/holo/                            # Core V2 Hybrid source code
+    ├── config.py                        # System configuration loader and constants
+    ├── detector.py                      # Pre-trigger ring buffer impulse detector
+    ├── features.py                      # 70-dim Onset/Decay MFCC & spectral extractor
+    ├── triangulation.py                 # 43-dim Lamb-wave dispersion & FourierTriangulator
+    ├── collect.py                       # Interactive single/group sample collection CLI
+    ├── train.py                         # Dual-branch training, tuning & fusion weight search
+    ├── evaluate.py                      # Holdout evaluation and confusion matrix reporting
+    └── listen.py                        # Low-latency hybrid listener with typing suppression
 ```
