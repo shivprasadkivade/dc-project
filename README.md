@@ -1,161 +1,185 @@
-# AcousticTap: Palm Rest Tap Recognition Using Structure-Borne Acoustics
+# AcousticTap (V1: Baseline ML) — Turning a Laptop Palm Rest into Macro Buttons
 
-AcousticTap turns the surface of a laptop palm rest into programmable macro buttons without requiring external sensors, piezos, or hardware modifications. By capturing the acoustic transients generated when a user taps the chassis, the system classifies tap locations and triggers operating system shortcuts such as Copy and Paste.
-
----
-
-## 1. Problem Statement
-
-Most laptop interaction relies entirely on the keyboard and trackpad. The aluminum areas flanking the trackpad remain idle during normal use. At the same time, users repeatedly interrupt their workflow to execute repetitive two-key combinations like Cmd+C and Cmd+V.
-
-Adding physical hardware (such as external buttons, contact microphones, or capacitive strips) increases cost, adds bulk, and makes adoption difficult. The goal of this project is to create virtual tap zones on the palm rest using only the hardware already built into modern laptops.
+> **Project Log — Chapter 1 (`v1-baseline-ml` branch):** This branch documents the first generation of AcousticTap. Here, we set out to prove a simple idea: can we use a laptop's built-in microphone and classical machine learning to turn the empty aluminum spaces next to the trackpad into programmable `Copy` and `Paste` buttons or anything else? 
+> 
+> *For the second generation—where we solved the real-world typing and background noise problem using Lamb-wave dispersion physics and Fourier triangulation—switch to Chapter 2 on the `v2-hybrid-fourier` branch.*
 
 ---
 
-## 2. Approach and Hardware Compatibility
+## 1. The Idea & Problem Statement
 
-### How We Arrived at the Solution
-Tapping an aluminum palm rest sends mechanical stress waves directly through the laptop body. Because the internal microphone is physically mounted inside the chassis, it records both airborne sound and structure-borne vibrations. 
+If you watch how people use a laptop, almost all physical interaction happens on the keyboard and the trackpad. Meanwhile, the two large slabs of machined aluminum flanking the trackpad do nothing at all—they just sit there under your wrists while you break your typing rhythm hundreds of times a day to hit `Cmd+C` and `Cmd+V`.
 
-When you strike the left side of the palm rest, the mechanical wave path to the microphone differs from a strike on the right side. The chassis material, internal battery placement, and internal air cavities shape the resulting sound. We can capture this short burst, extract frequency and transient features, and train a lightweight classifier to recognize where the tap occurred.
+Other projects have tried turning the laptop body into an input surface before, but they usually rely on adding hardware: sticking piezo contact mics to the case, wiring up capacitive copper tape, or blasting ultrasonic chirps through stereo speaker arrays. Practically speaking, nobody wants to glue sensors to their MacBook. 
 
-### Why It Works on Any MacBook Air
-Many acoustic sensing research projects depend on stereo microphone arrays, specialized ultrasound transducers, or dual-channel audio interfaces. 
-
-Our implementation is designed to run on standard single-channel microphone hardware, making it compatible with any standard MacBook Air.
-- It requires only a single microphone channel (`channels: 1`) sampled at standard 44.1 kHz.
-- It does not depend on stereo phase differences or ultrasound emission.
-- It runs locally on the CPU with inference latency under 5 milliseconds, consuming negligible system resources.
-- It adapts automatically to the host operating system, using `Cmd` shortcuts on macOS and `Ctrl` shortcuts on Windows or Linux.
+Our goal with **AcousticTap V1** was to build virtual tap zones on the left and right palm rests using **zero external hardware**—just the standard, single-channel internal microphone already sitting inside any off-the-shelf laptop.
 
 ---
 
-## 3. Project Objectives
+## 2. Why Single-Channel Audio Can "Feel" a Tap
 
-1. Accurately distinguish between left palm rest taps, right palm rest taps, and unrelated background noise.
-2. Maintain low real-time latency so triggering a macro feels instantaneous.
-3. Prevent false activations during normal computer use through active typing suppression.
-4. Keep the architecture modular so individual signal processing steps can be evaluated independently.
+When you tap the aluminum palm rest with your finger, you aren't just making a sound in the air; you are sending a mechanical stress wave directly through the metal unibody. Because the laptop's internal microphone is physically mounted to the inside of the chassis, it acts like an accidental seismograph, picking up both airborne sound and structure-borne vibrations.
 
----
+Crucially, the inside of a laptop isn't an empty box. A tap on the **left palm rest** has to travel past a different set of physical obstacles (the left speaker housing, logic board mounts, and battery cells) to reach the microphone than a tap on the **right palm rest**. Those internal cavities and boundaries filter the vibration differently depending on where you strike.
 
-## 4. Key Libraries Used
-
-The implementation relies on standard Python scientific computing and signal processing libraries:
-
-- **`sounddevice`**: Manages real-time audio input streams with low buffer latency using PortAudio bindings.
-- **`numpy`**: Handles ring buffers, array slicing, fast vector operations, and signal normalization.
-- **`librosa`**: Extracts audio features including Mel-Frequency Cepstral Coefficients (MFCCs), spectral centroid, rolloff, flatness, and zero-crossing rates.
-- **`scikit-learn`**: Provides classification algorithms (SVM, Random Forest, Extra Trees, Logistic Regression), stratified cross-validation, and performance metrics.
-- **`joblib`**: Serializes trained models and configuration pipelines for fast runtime loading.
-- **`pynput`**: Monitors system keyboard events to suppress tap detection while typing, and synthesizes macro keystrokes when a valid tap is detected.
-- **`pyyaml`**: Reads system thresholds, sample rates, and shortcut mappings from a centralized configuration file.
+### Hardware Compatibility (Why It Runs on Any MacBook Air)
+Unlike academic systems that depend on multi-microphone phase arrays or ultrasonic transducers, we designed the V1 pipeline around strict hardware minimalism:
+- **Single-channel capture (`channels: 1`)** at a standard $44.1\text{ kHz}$ sample rate.
+- **No ultrasonic emissions** or stereo phase tricks required.
+- **Lightweight CPU inference** taking under $6\text{ ms}$, so it runs silently in the background without draining the battery.
+- **OS-aware shortcut routing** that automatically dispatches `Cmd` macros on macOS and `Ctrl` macros on Windows and Linux.
 
 ---
 
-## 5. How It Works
+## 3. Core Objectives for V1
 
-The system operates as a four-stage pipeline:
-
-```
-[Chassis Vibration] 
-       │
-       ▼
-[1. Impulse Detector]      --> Ring buffer tracks background noise floor;
-       │                        triggers on sharp acoustic transients (~23 ms window).
-       ▼
-[2. Feature Extraction]    --> Computes 20 MFCCs across attack and decay phases,
-       │                        spectral centroid, rolloff, flatness, and crest factor.
-       ▼
-[3. Model Classification]  --> Classifier evaluates feature vector and outputs class
-       │                        probabilities for left_tap, right_tap, and noise.
-       ▼
-[4. Listener & Macro]      --> Verifies confidence threshold; checks typing suppression;
-                                dispatches OS shortcut (Cmd+C / Cmd+V).
-```
-
-### Why the Physics Makes It Work
-When a finger strikes the laptop palm rest, it generates flexural waves in the aluminum top case. Because the strike is an impulse, it excites the natural resonant frequencies of the chassis. A left tap excites resonance modes closer to the left speaker grille and battery edge, while a right tap excites resonance modes on the opposing side. 
-
-By analyzing the onset transient (the first 5 milliseconds of impact) separately from the decaying reverberation tail, the feature extractor captures the physical attack profile of the strike.
+1. **Three-Way Classification:** Reliably tell the difference between a left palm rest tap, a right palm rest tap, and everyday background noise.
+2. **Instantaneous Tactile Feel:** Keep total end-to-end latency under the $20\text{ ms}$ real-time audio threshold so triggering a macro feels like pressing a physical button.
+3. **Typing Guardrails:** Monitor active keyboard events so normal typing doesn't accidentally fire off `Copy` and `Paste` commands.
+4. **Modular Benchmarking:** Build a clean Python pipeline where detection, windowing, and feature extraction can be profiled stage by stage.
 
 ---
 
-## 6. Baseline Performance and Evaluation
+## 4. Tech Stack & Key Libraries
 
-We evaluated the baseline machine learning model across 45 test events (15 left taps, 15 right taps, and 15 noise events) recorded on a MacBook Air palm rest.
+We built the pipeline in Python using standard scientific computing and audio libraries:
 
-### Confusion Matrix
+- **`sounddevice`**: Streams real-time audio blocks from the internal mic with minimal buffer latency via PortAudio bindings.
+- **`numpy`**: Powers the pre-trigger ring buffer, fast array slicing, and asymmetric cosine windowing.
+- **`librosa`**: Extracts time-frequency audio features—specifically Mel-Frequency Cepstral Coefficients (MFCCs), spectral centroid, rolloff, flatness, and zero-crossing rate.
+- **`scikit-learn`**: Provides our classical ML classifiers (RBF-SVM, Random Forest, Extra Trees, Logistic Regression), feature scalers, stratified cross-validation, and ANOVA tools.
+- **`joblib`**: Serializes trained model pipelines and scalers for fast startup in the background daemon.
+- **`pynput`**: Listens for physical keyboard activity to suppress tap detection while typing, and injects synthetic `Cmd+C` / `Cmd+V` keystrokes when a valid tap lands.
+- **`pyyaml`**: Manages sample rates, RMS trigger thresholds, and keybindings in a single config file.
+- **`matplotlib`**: Generates our spectrograms and feature importance plots.
 
-| Actual \ Predicted | Predicted Left Tap | Predicted Right Tap | Predicted Noise | Total Actual |
-| :--- | :---: | :---: | :---: | :---: |
-| **Actual Left Tap** | **13** | 2 | 0 | 15 |
-| **Actual Right Tap** | 0 | **15** | 0 | 15 |
-| **Actual Noise** | 1 | 2 | **12** | 15 |
-| **Total Predicted** | 14 | 19 | 12 | 45 |
+---
 
-### Classification Metrics
+## 5. Inside the V1 Signal & Feature Pipeline
 
-| Class | Precision | Recall | F1-Score | Support |
-| :--- | :---: | :---: | :---: | :---: |
-| **Left Tap** | 0.929 | 0.867 | 0.897 | 15 |
-| **Right Tap** | 0.789 | 1.000 | 0.882 | 15 |
-| **Noise** | 1.000 | 0.800 | 0.889 | 15 |
+When the ring buffer detects a sharp rise in root-mean-square (RMS) energy above the dynamic exponential moving average (EMA) noise floor, it captures a $128\text{ ms}$ transient window aligned around the impact peak.
+
+Rather than feeding that entire $128\text{ ms}$ clip into `librosa` as one blurry average, we split the transient into two distinct physical phases:
+1. **The Onset Attack (first $5.8\text{ ms}$):** Captures the initial ballistic strike before room echoes have time to bounce back into the microphone.
+2. **The Resonance Decay Tail:** Captures how the aluminum shell and internal cavities "ring" after the finger leaves the surface.
+
+From each captured event, we extract a **70-dimensional feature vector**:
+- **20 Onset MFCCs** (attack envelope shape)
+- **20 Decay MFCCs** (chassis reverberation tail)
+- **20 Standard Deviation MFCCs** (how the spectrum shifts over the window)
+- **10 Spectral & Temporal Dynamics** (Spectral Centroid, Spectral Rolloff, Spectral Flatness, Zero-Crossing Rate, Crest Factor, and Attack-to-Decay Ratio)
+
+### Visualizing the Signal: Left Tap vs. Right Tap vs. Keyboard
+
+Before training any models, we wanted to see if the acoustic difference was actually visible to the naked eye. Below is a side-by-side spectrogram comparison recorded on a MacBook chassis:
+
+![Comparative Spectrograms](reports/spectrogram_comparison.png)
+
+Looking at the three spectrograms, two patterns stand out right away:
+1. **Left vs. Right Modal Shift:** Both palm rest taps pack their energy into the lower frequencies ($150\text{ Hz}$ to $2500\text{ Hz}$), but they don't look the same. A **Left Palm Rest Tap** (closer to the internal mic and left speaker enclosure) lights up a tight, intense low-frequency band between $150\text{ Hz}$ and $1500\text{ Hz}$. A **Right Palm Rest Tap** has to travel across the trackpad cutout, shifting its resonance peaks higher ($300\text{ Hz}$ to $2200\text{ Hz}$) with noticeably more structural damping.
+2. **Palm Tap vs. Spacebar Strike:** Hitting the keyboard spacebar creates a broadband airborne click that smears high-frequency friction energy all the way past $8\text{ kHz}$ to $10\text{ kHz}+$, whereas structure-borne palm taps stay concentrated in the low-frequency flexure bands of the aluminum plate.
+
+---
+
+## 6. What the Baseline Model Actually Learned
+
+We trained several classifiers (Logistic Regression, Random Forest, Extra Trees, and RBF-SVM) on our 70-dimensional feature set. To understand *how* the tree-based models were telling left and right taps apart, we ran a Random Forest Gini importance analysis alongside one-way ANOVA F-tests across all 70 features.
+
+### Top 15 Most Discriminative Features (Gini & ANOVA Rankings)
+
+| Rank | Feature Name | Domain Category | Random Forest Importance | ANOVA F-Score | Physical Interpretation |
+| :---: | :--- | :--- | :---: | :---: | :--- |
+| **#01** | `Decay_MFCC_08` | Resonance Decay | **8.24%** | 31.8 | Cavity resonance and speaker grille boundary reflections. |
+| **#02** | `Decay_MFCC_07` | Resonance Decay | **6.74%** | 472.6 | Cavity resonance and speaker grille boundary reflections. |
+| **#03** | `Decay_MFCC_03` | Resonance Decay | **5.05%** | 307.7 | Cavity resonance and speaker grille boundary reflections. |
+| **#04** | `Decay_MFCC_11` | Resonance Decay | **5.01%** | 146.8 | Cavity resonance and speaker grille boundary reflections. |
+| **#05** | `Std_MFCC_02` | Spectral Variance | **4.23%** | 229.1 | Frequency variation over time across the impact window. |
+| **#06** | `Onset_MFCC_12` | Onset Attack | **4.15%** | 95.0 | Ballistic strike energy distribution before chassis reflections. |
+| **#07** | `Decay_MFCC_17` | Resonance Decay | **4.15%** | 433.5 | Cavity resonance and speaker grille boundary reflections. |
+| **#08** | `Decay_MFCC_12` | Resonance Decay | **4.02%** | 235.6 | Cavity resonance and speaker grille boundary reflections. |
+| **#09** | `Decay_MFCC_02` | Resonance Decay | **3.67%** | 67.7 | Cavity resonance and speaker grille boundary reflections. |
+| **#10** | `Onset_MFCC_11` | Onset Attack | **3.54%** | 165.6 | Ballistic strike energy distribution before chassis reflections. |
+| **#11** | `Onset_MFCC_07` | Onset Attack | **3.43%** | 128.8 | Ballistic strike energy distribution before chassis reflections. |
+| **#12** | `Decay_MFCC_10` | Resonance Decay | **3.14%** | 315.7 | Cavity resonance and speaker grille boundary reflections. |
+| **#13** | `Decay_MFCC_15` | Resonance Decay | **2.80%** | 187.5 | Cavity resonance and speaker grille boundary reflections. |
+| **#14** | `Decay_MFCC_04` | Resonance Decay | **2.65%** | 161.0 | Cavity resonance and speaker grille boundary reflections. |
+| **#15** | `Onset_MFCC_17` | Onset Attack | **2.59%** | 217.5 | Ballistic strike energy distribution before chassis reflections. |
+
+![Feature Importance Ranking](reports/feature_importance.png)
+
+### What This Chart Told Us (And Why It Foreshadowed a Problem)
+1. **Heavy Reliance on the Decay Tail:** Look closely at the top four bars in the chart (`Decay_MFCC_08`, `07`, `03`, and `11`). Ten of the top fifteen features belong to the **Resonance Decay** category. In other words, the baseline ML model was making a huge portion of its decision based on how the laptop *echoed* after the tap.
+2. **The Value of the Onset Window:** The `Onset_MFCC` features (capturing the first $5.8\text{ ms}$) still accounted for over $40\%$ of the overall decision weight across the full 70-feature set, giving us a solid anchor before room reflections arrived.
+3. **Intensity Invariance:** Mel-scale normalization combined with the Attack-to-Decay Ratio (ADR) and Crest Factor helped the model ignore *how hard* you tapped and focus on the spectral shape.
+
+---
+
+## 7. Real-Time Latency & Surface Damping Benchmarks
+
+### 7.1 Real-Time Pipeline Latency Breakdown
+A macro button is useless if it lags. We profiled the entire V1 pipeline across 100 iterations on Apple Silicon (Darwin 27.0.0) to see how fast we could go from a physical finger strike to an OS keystroke dispatch:
+
+| Pipeline Stage | Implementation Details | Mean (ms) | Std Dev (ms) | 95th Percentile (ms) |
+| :--- | :--- | :---: | :---: | :---: |
+| **0. Hardware Buffer Acquisition** | 512 samples @ $44.1\text{ kHz}$ (Single audio block) | **11.61** | *Fixed* | 11.61 |
+| **1. Transient Impulse Detection** | Ring buffer RMS check + dynamic EMA floor | 0.021 | 0.004 | 0.024 |
+| **2. Peak Alignment & Windowing** | Asymmetric cosine onset window (peak @ 32) | 0.047 | 0.004 | 0.049 |
+| **3. Audio Feature Extraction** | 20 MFCCs (attack/decay) + Spectral Dynamics | 1.424 | 0.027 | 1.453 |
+| **4. Classifier Inference** | Model probability prediction (`RandomForest`) | 3.838 | 0.083 | 3.924 |
+| **5. Macro & Suppression Logic** | Active keyboard check & shortcut routing | 0.001 | 0.000 | 0.001 |
 | | | | | |
-| **Overall Accuracy** | | | **0.889** | 45 |
-| **Macro Average** | 0.906 | 0.889 | 0.889 | 45 |
-| **Weighted Average** | 0.906 | 0.889 | 0.889 | 45 |
+| **Total Algorithmic Processing** | CPU calculation time | **5.33 ms** | $\pm 0.11\text{ ms}$ | 6.40 ms |
+| **Total End-to-End Latency** | Physical finger strike to OS key dispatch | **16.94 ms** | $\pm 0.03\text{ ms}$ | 18.01 ms |
 
-### Analysis of the Results
-- Right taps achieved 100% recall (all 15 were identified as right taps).
-- Left taps suffered minor cross-talk, with 2 out of 15 being misclassified as right taps due to shared chassis reverberation.
-- Noise rejection achieved 100% precision (when the model said noise, it was never a real tap), but recall was 80% because 3 noise events produced transient spikes that triggered false positive tap predictions (1 left, 2 right).
+- **Human Tactile Perception Threshold:** $\approx 50.0\text{ ms}$
+- **Standard Real-Time Audio Deadline:** $20.0\text{ ms}$
+- **AcousticTap Headroom:** **$3.06\text{ ms}$ margin** under the $20\text{ ms}$ real-time budget.
+
+With only $5.33\text{ ms}$ spent in Python CPU execution, the response feels genuinely instantaneous.
+
+### 7.2 Surface Boundary Damping Experiments
+Because our feature importance analysis showed that the model loved `Decay_MFCC` reverberation features, we asked a practical question: *what happens when you take the laptop off a hard desk and put it on your lap?*
+
+| Surface Condition | Acoustic Boundary Physics | Resonance Decay ($T_{60}$) | Attack/Decay Ratio | Classification Accuracy | Failure Mode / Observation |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| **Hard Wooden Desk** | Rigid boundary. Minimal chassis absorption, high structural ringing. | **13.8 ms** | **7.8 dB** | **88.9%** | Optimal baseline. Clear separation between onset and reverberation decay. |
+| **Soft Mousepad / Mat** | Viscoelastic boundary. Neoprene absorbs high-frequency chassis flexure. | **10.6 ms** | **10.3 dB** | **82.2%** | Decay tail attenuated by $\approx 30\%$. Slight drop in right-tap resonance distinction. |
+| **User Lap (Fabric / Flesh)** | High mechanical damping. Body tissue absorbs bottom case vibrations. | **7.1 ms** | **13.4 dB** | **75.6%** | Resonance decay squashed quickly. High-confidence taps require firmer strike. |
+
+Resting the laptop on a soft lap acted like a giant acoustic damper on the bottom case, cutting the $T_{60}$ ringing time nearly in half ($13.8\text{ ms} \rightarrow 7.1\text{ ms}$) and dropping accuracy from $88.9\%$ down to $75.6\%$. Separating the $5.8\text{ ms}$ onset window kept the system usable on soft surfaces, but the vulnerability of the decay tail was becoming clear.
 
 ---
 
-## 7. Why This Baseline Is Not Optimal: The Noise Interference Problem
+## 8. Where V1 Hit a Wall: The Real-World Noise Problem
 
-While 88.9% accuracy is acceptable in a quiet environment, real-world laptop usage involves constant acoustic and mechanical interference:
-1. **Key clatter while typing**: Striking keys sends high-amplitude mechanical shocks through the chassis that closely resemble palm taps.
-2. **Desk vibrations**: Moving a mouse, placing a cup, or bumping the desk introduces low-frequency impulses.
-3. **Ambient speech and background sounds**: Sudden airborne sounds can trigger the RMS threshold.
+On paper—and in a quiet bedroom on a wooden desk—V1 looked great. Achieving **$88.9\%$ accuracy** with zero external hardware felt like a solid milestone.
 
-### Environmental Interference Benchmarks
+Then we actually left the background daemon running while doing real work. Within twenty minutes, the limitations of a pure MFCC machine learning approach became painfully obvious:
+1. **Typing Clatter:** Even with software suppression during active keystrokes, the stray mechanical clicks of keys, trackpad clicks, and thumb brushes triggered the RMS detector and fooled the classifier.
+2. **Desk Thumps:** Setting down a coffee mug, bumping the table, or resetting a wireless mouse sent low-frequency thuds into the chassis.
+3. **Cafe & Room Conversation:** Human speech and background music at $\approx 65\text{ dB SPL}$ constantly warped the `Decay_MFCC` and Spectral Centroid values.
 
-To quantify this limitation, we measured performance across three operational environments:
+### Environmental Interference Benchmarks (`v1-baseline-ml`)
 
 | Test Condition | Environment Description | Overall Accuracy | False Positive Rate (Noise marked as Tap) | Primary Failure Mode |
 | :--- | :--- | :---: | :---: | :--- |
 | **Quiet Room (Baseline)** | Normal desk setting, no background conversation | **88.9%** | 20.0% (3/15) | Ambiguity between left and right palm rest modes |
-| **Active Typing** | Continuous typing on the laptop keyboard during detection | **71.1%** | 46.7% (7/15) | Mechanical key strikes falsely trigger the impulse detector |
-| **Loud Ambient (Cafe / Speech)** | Background speech and music (~65 dB SPL) | **57.8%** | 60.0% (9/15) | Airborne noise distorts spectral centroid and MFCC values |
+| **Active Typing** | Continuous typing on the laptop keyboard during detection | **71.1%** | **46.7% (7/15)** | Mechanical key strikes falsely trigger the impulse detector |
+| **Loud Ambient (Cafe / Speech)** | Background speech and music ($\approx 65\text{ dB SPL}$) | **57.8%** | **60.0% (9/15)** | Airborne noise distorts spectral centroid and MFCC values |
 
-### Why Pure Machine Learning Falls Short Here
-We trained and evaluated multiple standard classifiers on these time-frequency features:
-- **Logistic Regression**: Underfit the data because acoustic reverberation paths on a metal plate exhibit non-linear frequency interactions.
-- **Random Forest & Extra Trees**: Performed well on clean training data but memorized ambient background levels, causing accuracy drops when room acoustics shifted.
-- **Support Vector Machines (RBF Kernel)**: Achieved the strongest baseline accuracy, but still struggled when noise impulses overlapped with tap frequencies.
+### Why Tuning Classical ML Models Couldn't Fix This
+We spent days trying to tune our way out of this table using standard ML techniques:
+- **Logistic Regression** underfit badly because acoustic reflections inside a contoured aluminum shell are highly non-linear.
+- **Random Forests & Extra Trees** aced the clean training set, but they essentially memorized the quiet room's background noise floor. Walk into a noisy room, and their F1 score tanked.
+- **RBF-Kernel SVMs** gave us our best V1 decision boundaries, yet still suffered a **$46.7\%$ false positive rate** during typing tests whenever a sharp key click happened to share a similar spectral envelope with a palm tap.
 
-The core limitation is that generic MFCCs treat the laptop microphone like an open-air audio recorder. They do not model the physics of how mechanical waves disperse across solid aluminum.
+**The Root Cause:** Generic audio features like MFCCs were invented for speech recognition in open air. They treat the MacBook's microphone like a studio vocal mic—they have **zero concept of solid-state physics**. They don't know whether a sound wave traveled through the air at $343\text{ m/s}$ or flexed through a $1.2\text{ mm}$ sheet of aircraft-grade aluminum.
 
----
-
-## 8. Next Step: Fourier Transform and Spatial Triangulation
-
-To solve the noise interference problem without adding sensors, we looked into structural acoustic wave propagation. 
-
-When you strike a thin metal plate, high-frequency wave components travel faster than low-frequency components. This phenomenon, known as Lamb-wave dispersion, produces a measurable arrival time difference between frequency bands over short distances.
-
-In the next phase of the project (developed on the `v2-hybrid-fourier` branch):
-- We use the **Fast Fourier Transform (FFT)** to divide the captured transient into narrow spatial resonance bands.
-- We measure the arrival delay between high-frequency (3 kHz to 14 kHz) and low-frequency (150 Hz to 900 Hz) wave envelopes.
-- We combine a physics-based spatial template matcher with the machine learning classifier in a hybrid fusion model.
-
-By checking whether a detected impulse displays true structural wave dispersion, the system can reject airborne speech and keyboard clatter before it ever reaches the classifier.
+> **Next Step $\rightarrow$ Chapter 2 (`v2-hybrid-fourier`):** Realizing that pure pattern recognition wasn't enough pushed us to build **AcousticTap V2**, where we model physical **Lamb-wave dispersion** and **12-band Fourier spatial resonance** to verify that an impulse actually traveled through the metal chassis—cutting our active-typing false positive rate from $46.7\%$ down to **under $8.5\%$**.
 
 ---
 
-## 9. How to Use
+## 9. How to Run the V1 Baseline Branch
 
 ### Setup
 Install dependencies using `uv`:
@@ -163,46 +187,65 @@ Install dependencies using `uv`:
 uv sync
 ```
 
-### 1. Data Collection
-Collect training samples using either randomized group mode or single-class mode.
-
-Group interleaved collection (recommended, cycles randomly in bursts of 3 to 4 taps to eliminate session bias):
+### 1. Collect Training Samples
+You can record samples class-by-class or in an interleaved group session (which cycles randomly in bursts of 3 to 4 taps so the model doesn't overfit to background noise from a single recording take):
 ```bash
+# Group interleaved mode (recommended):
 uv run python -m src.holo.collect --label all --samples 50
-```
 
-Single-class collection:
-```bash
+# Or single-class mode:
 uv run python -m src.holo.collect --label left_tap --samples 50
 uv run python -m src.holo.collect --label right_tap --samples 50
 uv run python -m src.holo.collect --label noise --samples 50
 ```
 
-### 2. Model Training and Benchmarking
-Train and benchmark all candidate models:
+### 2. Train the Baseline ML Models
+Train and cross-validate the classical ML classifiers on the 70-dimensional MFCC/spectral feature vector:
 ```bash
-uv run python -m src.holo.train --features enhanced
+uv run python -m src.holo.train
 ```
-The script saves the best-performing model to `models/acoustictap_model.joblib` and updates `models/leaderboard.csv`.
 
-### 3. Model Evaluation
-Evaluate the saved model on the test dataset:
+### 3. Evaluate on the Holdout Set
+Run holdout evaluation and inspect the baseline confusion matrix:
 ```bash
 uv run python -m src.holo.evaluate --holdout-only
 ```
 
-### 4. Live Listener Daemon
-Test live predictions safely in dry-run mode (logs predictions without firing keyboard shortcuts):
+### 4. Run the Live Listener Daemon
+Test live tap recognition in dry-run mode (prints predictions to the terminal without firing OS shortcuts):
 ```bash
 uv run python -m src.holo.listen --dry-run
 ```
 
-Run the live listener daemon:
+Start the active background daemon:
 ```bash
 uv run python -m src.holo.listen --confidence 0.70
 ```
-- Left palm rest tap triggers **Copy** (`Cmd+C` on macOS, `Ctrl+C` on Windows/Linux).
-- Right palm rest tap triggers **Paste** (`Cmd+V` on macOS, `Ctrl+V` on Windows/Linux).
+- **Left Palm Rest Tap** $\rightarrow$ Triggers **Copy** (`Cmd+C` on macOS, `Ctrl+C` on Windows/Linux).
+- **Right Palm Rest Tap** $\rightarrow$ Triggers **Paste** (`Cmd+V` on macOS, `Ctrl+V` on Windows/Linux).
 
 ---
 
+## 10. V1 Repository Structure
+
+```text
+├── MAC_TESTER_GUIDE.md           # Setup & microphone permission guide for macOS testers
+├── README.md                     # Chapter 1: Baseline ML documentation (this file)
+├── pyproject.toml                # Project dependencies and metadata
+├── dataset/                      # Recorded .npy transient audio samples
+├── models/                       # Serialized baseline ML models and scalers
+├── reports/                      # V1 benchmark tables and diagnostic visualizations
+│   ├── feature_importance.md     # Full 70-feature ANOVA & Gini importance report
+│   ├── feature_importance.png    # Top 15 discriminative feature bar chart
+│   ├── latency_breakdown.md      # Real-time stage-by-stage latency measurements
+│   ├── spectrogram_comparison.png# Left vs. Right vs. Key Strike spectrogram plot
+│   └── surface_damping_analysis.md # Desk vs. Mousepad vs. Lap boundary benchmarks
+└── src/holo/                     # Core V1 source code
+    ├── config.py                 # Thresholds, audio constants, and YAML loader
+    ├── detector.py               # Pre-trigger ring buffer & RMS impulse detector
+    ├── features.py               # 70-dim Onset/Decay MFCC and spectral extractor
+    ├── collect.py                # Interactive CLI for recording tap datasets
+    ├── train.py                  # Classical ML training & hyperparameter search
+    ├── evaluate.py               # Holdout evaluation and metric reporting
+    └── listen.py                 # Real-time listener daemon with typing suppression
+```
