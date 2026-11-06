@@ -20,3 +20,7 @@ models/
 .vscode/
 .idea/
 hui
+# Virtual environments
+.venv
+. me
+*.npy

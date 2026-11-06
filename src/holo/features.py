@@ -1,13 +1,27 @@
 from typing import Optional
 import numpy as np
 import librosa
-from .config import SAMPLE_RATE, load_config
-from .triangulation import align_and_slice_waveform
+from .config import SAMPLE_RATE, WINDOW_PRE_PEAK, WINDOW_WAKE
 
-_cfg = load_config()
-_feat_cfg = _cfg.get("features", {})
-N_FFT = _feat_cfg.get("ml_n_fft", 256)
-HOP_LENGTH = _feat_cfg.get("ml_hop_length", 64)
+def align_transient(waveform: np.ndarray, pre_peak: int = WINDOW_PRE_PEAK, length: int = WINDOW_WAKE) -> np.ndarray:
+    """Extracts a peak-aligned active transient window, eliminating trailing silence."""
+    peak_idx = int(np.argmax(np.abs(waveform)))
+    start = peak_idx - pre_peak
+    end = start + length
+
+    if start >= 0 and end <= len(waveform):
+        return waveform[start:end]
+
+    pad_left = max(0, -start)
+    pad_right = max(0, end - len(waveform))
+    sliced = waveform[max(0, start):min(len(waveform), end)]
+    return np.pad(sliced, (pad_left, pad_right), mode="constant")
+
+def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: str = "enhanced") -> np.ndarray:
+    """Normalizes the peak-aligned tap waveform and extracts a scale-invariant 67-dimensional feature vector."""
+    active_wave = align_transient(waveform)
+    max_val = np.max(np.abs(active_wave))
+    norm_wave = active_wave / (max_val + 1e-8)
 
 def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: Optional[str] = "enhanced") -> np.ndarray:
     """
@@ -21,7 +35,7 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
     norm_onset = (onset / max_val).astype(np.float32)
 
     mfccs = librosa.feature.mfcc(
-        y=norm_wake, sr=sr, n_mfcc=20, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=40
+        y=norm_wave, sr=sr, n_mfcc=20, n_mels=40, n_fft=n_fft, hop_length=hop_length
     )
     onset_mfcc = np.mean(mfccs[:, :3], axis=1)
     decay_mfcc = np.mean(mfccs[:, 3:], axis=1)
@@ -30,19 +44,18 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
     features = [onset_mfcc, decay_mfcc, std_mfcc]
 
     if feature_set == "enhanced":
-        centroid = librosa.feature.spectral_centroid(y=norm_wake, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH)
-        rolloff = librosa.feature.spectral_rolloff(y=norm_wake, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH)
-        flatness = librosa.feature.spectral_flatness(y=norm_wake, n_fft=N_FFT, hop_length=HOP_LENGTH)
-        zcr = librosa.feature.zero_crossing_rate(y=norm_wake, frame_length=N_FFT, hop_length=HOP_LENGTH)
-
-        rms_norm_wake = float(np.sqrt(np.mean(norm_wake ** 2)) + 1e-8)
-        crest_factor = float(1.0 / rms_norm_wake)
-        decay_tail = norm_wake[256:] if len(norm_wake) > 256 else norm_wake
-        attack_decay_ratio = float(np.log10((np.mean(norm_onset ** 2) + 1e-8) / (np.mean(decay_tail ** 2) + 1e-8)))
-
-        rms_wake = float(np.sqrt(np.mean(wake ** 2)) + 1e-8)
-        rms_pre = float(np.sqrt(np.mean(pre_noise ** 2)) + 1e-8)
-        snr_db = float(np.log10((rms_wake / rms_pre) + 1e-8))
+        delta_mfcc = librosa.feature.delta(mfccs, width=3)
+        centroid = librosa.feature.spectral_centroid(
+            y=norm_wave, sr=sr, n_fft=n_fft, hop_length=hop_length
+        )
+        rolloff = librosa.feature.spectral_rolloff(
+            y=norm_wave, sr=sr, n_fft=n_fft, hop_length=hop_length
+        )
+        zcr = librosa.feature.zero_crossing_rate(
+            y=norm_wave, frame_length=n_fft, hop_length=hop_length
+        )
+        # Scale-invariant normalized energy (measures impulse concentration, invariant to strike loudness)
+        log_energy = np.array([np.log10(np.mean(norm_wave ** 2) + 1e-8)])
 
         features.extend([
             np.mean(centroid, axis=1), np.std(centroid, axis=1),

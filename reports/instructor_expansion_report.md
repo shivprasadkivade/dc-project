@@ -50,17 +50,16 @@ Comparing mechanical decay times ($T_{60}$) and attack-to-decay ratios across di
 
 ---
 
-## 5. Fourier Transform & Physical Acoustic Dispersion
-![Fourier Dispersion & Timing](fourier_dispersion_timing.png)
-![Fourier Frequency Spectrum](fourier_frequency_spectrum.png)
+## 5. Next Phase: Fourier Transform & Spatial Triangulation
+The physical acoustic dispersion experiments (Lamb-wave dispersion delays, frequency shifts, and 12-band spatial resonance distributions) are implemented on the `v2-hybrid-fourier` branch.
 
-### Key Physical Acoustic Findings:
+### Key Physical Acoustic Findings (from Apple Silicon validation):
 - **Arrival Time Difference (Lamb Wave Dispersion):**
   - Left Tap Dispersion Lag: **0.14 ms**
   - Right Tap Dispersion Lag: **-3.24 ms**
 - **Frequency Spectrum Resonance Shift:**
   - Left Dominant Resonance Peak: **129 Hz**
   - Right Dominant Resonance Peak: **172 Hz**
-- **Noise Rejection Advantage:** Airborne noise and key clatter do not exhibit plate dispersion or matching 12-band spatial resonance profiles, allowing deterministic noise filtering.
+- **Noise Rejection Advantage:** Airborne noise and key clatter do not exhibit plate dispersion or matching 12-band spatial resonance profiles, allowing deterministic noise filtering in the v2 pipeline.
 
-*Full data tables and equations available in [`fourier_analysis_report.md`](fourier_analysis_report.md).*
+*(Detailed dispersion timing plots, frequency spectrum figures, and full derivation report are available in the `reports/` directory of the `v2-hybrid-fourier` branch).*
