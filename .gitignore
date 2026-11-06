@@ -23,4 +23,4 @@ hui
 # Virtual environments
 .venv
 . me
-
+*.npy
