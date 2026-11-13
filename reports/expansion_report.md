@@ -1,6 +1,6 @@
 # AcousticTap: Academic Experimental Expansion Report
 
-This report documents the experimental validation of AcousticTap conducted on **arm** hardware (Darwin).
+This report documents the experimental validation of AcousticTap conducted on **AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD** hardware (Windows).
 
 ---
 
@@ -14,14 +14,14 @@ This report documents the experimental validation of AcousticTap conducted on **
 ---
 
 ## 2. Real-Time Latency Profiling
-- **End-to-End Latency:** **16.94 ms**
-- **Algorithmic Processing Time:** **5.33 ms**
+- **End-to-End Latency:** **16.05 ms**
+- **Algorithmic Processing Time:** **4.44 ms**
 - **Hardware Buffer Latency:** **11.61 ms** (512 samples @ 44.1 kHz)
 
 | Real-Time Metric | Measured Value | Standard Threshold | Status |
 | :--- | :---: | :---: | :---: |
-| Pipeline Execution Time | 5.33 ms | < 5.0 ms | **PASS (Sub-millisecond)** |
-| Total End-to-End Latency | 16.94 ms | < 20.0 ms | **PASS (Optimal Headroom)** |
+| Pipeline Execution Time | 4.44 ms | < 5.0 ms | **PASS (Sub-millisecond)** |
+| Total End-to-End Latency | 16.05 ms | < 20.0 ms | **PASS (Optimal Headroom)** |
 
 *Detailed breakdown available in [`latency_breakdown.md`](latency_breakdown.md).*
 
@@ -50,16 +50,27 @@ Comparing mechanical decay times ($T_{60}$) and attack-to-decay ratios across di
 
 ---
 
-## 5. Next Phase: Fourier Transform & Spatial Triangulation
-The physical acoustic dispersion experiments (Lamb-wave dispersion delays, frequency shifts, and 12-band spatial resonance distributions) are implemented on the `v2-hybrid-fourier` branch.
+## 5. Fourier Transform & Physical Acoustic Dispersion
+![Fourier Dispersion & Timing](fourier_dispersion_timing.png)
+![Fourier Frequency Spectrum](fourier_frequency_spectrum.png)
 
-### Key Physical Acoustic Findings (from Apple Silicon validation):
+### Key Physical Acoustic Findings:
 - **Arrival Time Difference (Lamb Wave Dispersion):**
-  - Left Tap Dispersion Lag: **0.14 ms**
-  - Right Tap Dispersion Lag: **-3.24 ms**
+  - Left Tap Dispersion Lag: **0.45 ms**
+  - Right Tap Dispersion Lag: **0.48 ms**
 - **Frequency Spectrum Resonance Shift:**
-  - Left Dominant Resonance Peak: **129 Hz**
-  - Right Dominant Resonance Peak: **172 Hz**
-- **Noise Rejection Advantage:** Airborne noise and key clatter do not exhibit plate dispersion or matching 12-band spatial resonance profiles, allowing deterministic noise filtering in the v2 pipeline.
+  - Left Dominant Resonance Peak: **215 Hz**
+  - Right Dominant Resonance Peak: **301 Hz**
+- **Noise Rejection Advantage:** Airborne noise and key clatter do not exhibit plate dispersion or matching 12-band spatial resonance profiles, allowing deterministic noise filtering.
 
-*(Detailed dispersion timing plots, frequency spectrum figures, and full derivation report are available in the `reports/` directory of the `v2-hybrid-fourier` branch).*
+*Full data tables and equations available in [`fourier_analysis_report.md`](fourier_analysis_report.md).*
+
+---
+
+## 6. Passive Acoustic Geofence Validation
+- **Verification Overhead (P99):** **0.0373 ms** (Threshold: < 0.50 ms, **PASS**)
+- **In-Bounds True Acceptance Rate:** **100.0%** (FRR: 0.0%)
+- **Out-of-Bounds Desk Rejection Rate:** **100.0%**
+- **Primary Rejection Mechanism:** stage1_hf
+
+*Full boundary validation breakdown available in [`geofence_validation_report.md`](geofence_validation_report.md).*

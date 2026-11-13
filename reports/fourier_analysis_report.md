@@ -19,11 +19,11 @@ As a direct consequence, **high-frequency wave components (3 kHz - 14 kHz) trave
 
 | Acoustic Timing Metric | Left Palm Rest Tap | Right Palm Rest Tap | Difference (Left vs Right) | Physical Interpretation |
 | :--- | :---: | :---: | :---: | :--- |
-| **High-Frequency Arrival ($t_{HF}$)** | **0.77 ms** | **4.13 ms** | 3.36 ms | Direct ballistic wave reaches internal microphone first |
-| **Low-Frequency Arrival ($t_{LF}$)** | **0.91 ms** | **0.88 ms** | 0.02 ms | Dispersive bending wave arrives with delayed envelope peak |
-| **Lamb Dispersion Delay ($\Delta t_{disp}$)** | **0.14 ms** | **-3.24 ms** | **3.38 ms** | Propagation distance to mic alters frequency group velocity |
-| **Low-Band Group Delay ($\tau_{low}$)** | 0.46 samples | 0.61 samples | 0.15 samples | Low-frequency plate resonance boundary phase delay |
-| **Mid-Band Group Delay ($\tau_{mid}$)** | 0.51 samples | 0.81 samples | 0.30 samples | Transition region dispersion phase delay |
+| **High-Frequency Arrival ($t_{HF}$)** | **0.41 ms** | **0.43 ms** | 0.02 ms | Direct ballistic wave reaches internal microphone first |
+| **Low-Frequency Arrival ($t_{LF}$)** | **0.86 ms** | **0.91 ms** | 0.05 ms | Dispersive bending wave arrives with delayed envelope peak |
+| **Lamb Dispersion Delay ($\Delta t_{disp}$)** | **0.45 ms** | **0.48 ms** | **0.02 ms** | Propagation distance to mic alters frequency group velocity |
+| **Low-Band Group Delay ($\tau_{low}$)** | 0.61 samples | 0.85 samples | 0.23 samples | Low-frequency plate resonance boundary phase delay |
+| **Mid-Band Group Delay ($\tau_{mid}$)** | 0.49 samples | 0.47 samples | 0.01 samples | Transition region dispersion phase delay |
 
 ![Arrival Timing & Dispersion](fourier_dispersion_timing.png)
 
@@ -35,18 +35,18 @@ Because the internal battery, speaker cavities, and trackpad cutouts create asym
 
 | Resonance Band | Frequency Range (Hz) | Left Tap Energy ($log_{10} V^2$) | Right Tap Energy ($log_{10} V^2$) | Energy Difference ($\Delta$ dB) | Dominant Strike Side |
 | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Band 01** | 150 - 221 Hz | **3.30** | **3.54** | **-0.24 dB** | **RIGHT** |
-| **Band 02** | 221 - 326 Hz | **2.89** | **2.85** | **+0.04 dB** | **BALANCED** |
-| **Band 03** | 326 - 482 Hz | **2.50** | **2.61** | **-0.11 dB** | **RIGHT** |
-| **Band 04** | 482 - 711 Hz | **2.01** | **2.10** | **-0.09 dB** | **RIGHT** |
-| **Band 05** | 711 - 1049 Hz | **1.48** | **1.66** | **-0.18 dB** | **RIGHT** |
-| **Band 06** | 1049 - 1549 Hz | **0.74** | **1.04** | **-0.30 dB** | **RIGHT** |
-| **Band 07** | 1549 - 2286 Hz | **-0.75** | **0.28** | **-1.03 dB** | **RIGHT** |
-| **Band 08** | 2286 - 3373 Hz | **-1.24** | **-0.65** | **-0.59 dB** | **RIGHT** |
-| **Band 09** | 3373 - 4978 Hz | **-2.41** | **-1.14** | **-1.27 dB** | **RIGHT** |
-| **Band 10** | 4978 - 7347 Hz | **-2.48** | **-1.34** | **-1.14 dB** | **RIGHT** |
-| **Band 11** | 7347 - 10842 Hz | **-2.51** | **-1.59** | **-0.93 dB** | **RIGHT** |
-| **Band 12** | 10842 - 16000 Hz | **-2.90** | **-1.99** | **-0.91 dB** | **RIGHT** |
+| **Band 01** | 150 - 221 Hz | **3.56** | **2.89** | **+0.66 dB** | **LEFT** |
+| **Band 02** | 221 - 326 Hz | **3.23** | **3.41** | **-0.17 dB** | **RIGHT** |
+| **Band 03** | 326 - 482 Hz | **3.06** | **2.71** | **+0.35 dB** | **LEFT** |
+| **Band 04** | 482 - 711 Hz | **2.47** | **3.06** | **-0.59 dB** | **RIGHT** |
+| **Band 05** | 711 - 1049 Hz | **2.47** | **1.70** | **+0.77 dB** | **LEFT** |
+| **Band 06** | 1049 - 1549 Hz | **1.76** | **2.21** | **-0.45 dB** | **RIGHT** |
+| **Band 07** | 1549 - 2286 Hz | **0.83** | **1.45** | **-0.61 dB** | **RIGHT** |
+| **Band 08** | 2286 - 3373 Hz | **-0.12** | **0.09** | **-0.20 dB** | **RIGHT** |
+| **Band 09** | 3373 - 4978 Hz | **-0.62** | **-0.60** | **-0.03 dB** | **BALANCED** |
+| **Band 10** | 4978 - 7347 Hz | **-0.88** | **-0.85** | **-0.03 dB** | **BALANCED** |
+| **Band 11** | 7347 - 10842 Hz | **-1.16** | **-1.18** | **+0.02 dB** | **BALANCED** |
+| **Band 12** | 10842 - 16000 Hz | **-1.42** | **-1.47** | **+0.05 dB** | **BALANCED** |
 
 ![Frequency Spectrum & Spatial Resonance](fourier_frequency_spectrum.png)
 

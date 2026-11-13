@@ -92,18 +92,63 @@ def collect_group_interleaved(samples_per_class: int, threshold: float):
     print(f"Successfully collected all {total_needed} samples across {len(CLASSES)} classes!")
     print(f"{'='*65}\n")
 
+def calibrate_geofence_session(threshold: float = RMS_THRESHOLD):
+    """
+    Rapid 45-second interactive calibration for Generation 4 Passive Acoustic Geofence.
+    Phase 1: 20 taps for left palm rest (center, inner edge, outer edge).
+    Phase 2: 20 taps for right palm rest (center, inner edge, outer edge).
+    Phase 3: 10 strikes for oob_desk (desk surface 2-15 cm around laptop & keyboard bezel).
+    """
+    detector = ImpulseDetector(threshold=threshold)
+    phases = [
+        ("left_tap", 20, "Phase 1/3: Tap across LEFT palm rest (center, inner edge, outer edge)"),
+        ("right_tap", 20, "Phase 2/3: Tap across RIGHT palm rest (center, inner edge, outer edge)"),
+        ("oob_desk", 10, "Phase 3/3: Knock/tap the DESK surface (2-15 cm around laptop) & upper keyboard bezel"),
+    ]
+
+    print("\n" + "=" * 70)
+    print(" [RAPID 45-SECOND PASSIVE ACOUSTIC GEOFENCE CALIBRATION]")
+    print(" This wizard records spatial boundary samples to establish your laptop's")
+    print(" mechanical unibody manifold and eliminate desk-bump false triggers.")
+    print("=" * 70)
+
+    try:
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=1, callback=detector.audio_callback
+        ):
+            for label, count_target, instructions in phases:
+                save_dir = DATA_DIR / label
+                print(f"\n>>> {instructions}")
+                print(f"Target: {count_target} taps | Waiting for strikes...\n")
+                count = 0
+                while count < count_target:
+                    waveform = detector.event_queue.get()
+                    saved_file = save_sample(save_dir, label, waveform)
+                    count += 1
+                    peak = float(np.max(np.abs(waveform)))
+                    print(f"  [{count}/{count_target}] Captured -> {saved_file.name} (Peak: {peak:.3f})")
+
+        print("\n" + "=" * 70)
+        print("Geofence calibration data collection complete!")
+        print("Run 'uv run python -m src.holo.train' to fit and serialize your geofence.")
+        print("=" * 70 + "\n")
+    except KeyboardInterrupt:
+        print("\n[Interrupted] Geofence calibration aborted by user.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Collect training taps with randomized group interleaving to eliminate session bias"
+        description="Collect training taps or calibrate passive acoustic geofence boundaries"
     )
     parser.add_argument(
-        "--label",
-        choices=CLASSES + ["all"],
+        "--label", "--class",
+        dest="label",
+        type=str,
         default="all",
-        help="Target class label (default: 'all' runs randomized group interleaving)"
+        help="Target class label (e.g. left_tap, right_tap, noise, oob_desk, or 'all')"
     )
     parser.add_argument(
-        "--samples",
+        "--samples", "--count",
+        dest="samples",
         type=int,
         default=50,
         help="Number of taps to record per class (default: 50)"
@@ -114,9 +159,16 @@ if __name__ == "__main__":
         default=RMS_THRESHOLD,
         help="Mic RMS trigger threshold"
     )
+    parser.add_argument(
+        "--calibrate-geofence",
+        action="store_true",
+        help="Run rapid 45-second interactive calibration wizard for geofence boundaries"
+    )
     args = parser.parse_args()
 
-    if args.label == "all":
+    if args.calibrate_geofence:
+        calibrate_geofence_session(args.threshold)
+    elif args.label == "all":
         collect_group_interleaved(args.samples, args.threshold)
     else:
         collect_single_class(args.label, args.samples, args.threshold)
