@@ -108,3 +108,16 @@ listener:
   shortcuts:
     left_tap: "c"               # Triggers Cmd+C (macOS) or Ctrl+C (Windows/Linux)
     right_tap: "v"              # Triggers Cmd+V (macOS) or Ctrl+V (Windows/Linux)
+
+
+geofence:
+  enabled: true
+  # Stage 1: Physical invariant hard gates
+  min_hf_lf_ratio_db: -14.0
+  min_attack_decay_ratio: 1.85
+  min_crest_factor: 4.2
+  dispersion_window_ms: [-5.5, 2.5]
+  # Stage 2: Spatial manifold (Ledoit-Wolf Mahalanobis)
+  mahalanobis_threshold: 5.90
+  surface_tolerance_scale: 1.15
+  class_conditional: true
