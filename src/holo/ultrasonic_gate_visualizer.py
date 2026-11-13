@@ -276,11 +276,11 @@ def analyze_and_plot(rx_signal: np.ndarray, fs: int, output_path: str = "ultraso
     y_max = max(140.0, np.max(left_score) * 1.18, np.max(right_score) * 1.18)
     ax2.set_ylim(0, y_max)
     ax2.grid(True, linestyle='--', alpha=0.2)
-    ax2.legend(loc='upper right', framealpha=0.55, fontsize=8.5, ncol=2)
+    ax2.legend(loc='upper left', framealpha=0.65, fontsize=8.5, ncol=2)
 
     plt.savefig(output_path, bbox_inches='tight', pad_inches=0.25, facecolor=fig.get_facecolor())
+    plt.close(fig)
     print(f"Saved high-resolution visual report to: {output_path}")
-    plt.show()
 
 
 if __name__ == "__main__":
