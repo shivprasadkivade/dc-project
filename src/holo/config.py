@@ -21,11 +21,19 @@ CFG = load_config()
 
 # Directory Paths
 DATA_DIR = PROJECT_ROOT / "dataset"
+BOUNDARY_DIR = DATA_DIR / "boundary"
+BOUNDARY_INSIDE_DIR = BOUNDARY_DIR / "inside"
+BOUNDARY_OUTSIDE_DIR = BOUNDARY_DIR / "outside"
+
 MODEL_DIR = PROJECT_ROOT / "models"
 VERSIONS_DIR = MODEL_DIR / "versions"
 RESULTS_DIR = MODEL_DIR / "test_results"
 MODEL_PATH = MODEL_DIR / "acoustictap_model.joblib"
 
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+BOUNDARY_DIR.mkdir(parents=True, exist_ok=True)
+BOUNDARY_INSIDE_DIR.mkdir(parents=True, exist_ok=True)
+BOUNDARY_OUTSIDE_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -57,11 +65,12 @@ CLASSES = list(TRAIN_CFG.get("classes", ["left_tap", "right_tap", "noise"]))
 # Geofence Constants
 GEOFENCE_CFG = CFG.get("geofence", {
     "enabled": True,
-    "min_hf_lf_ratio_db": -14.0,
-    "min_attack_decay_ratio": 1.85,
-    "min_crest_factor": 4.2,
-    "dispersion_window_ms": [-5.5, 2.5],
-    "mahalanobis_threshold": 5.90,
+    "boundary_threshold": 0.62,
+    "min_hf_lf_ratio_db": -14.5,
+    "min_attack_decay_ratio": 3.50,
+    "min_crest_factor": 3.80,
+    "dispersion_window_ms": [-5.0, 3.0],
+    "max_inside_distance": 5.80,
     "surface_tolerance_scale": 1.15,
     "class_conditional": True,
 })

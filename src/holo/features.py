@@ -38,12 +38,12 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
 
         rms_norm_wake = float(np.sqrt(np.mean(norm_wake ** 2)) + 1e-8)
         crest_factor = float(1.0 / rms_norm_wake)
-        decay_tail = norm_wake[256:] if len(norm_wake) > 256 else norm_wake
-        attack_decay_ratio = float(np.log10((np.mean(norm_onset ** 2) + 1e-8) / (np.mean(decay_tail ** 2) + 1e-8)))
+        decay_tail = norm_wake[128:] if len(norm_wake) > 128 else norm_wake
+        attack_decay_ratio = float(10.0 * np.log10((np.mean(norm_onset ** 2) + 1e-8) / (np.mean(decay_tail ** 2) + 1e-8)))
 
         rms_wake = float(np.sqrt(np.mean(wake ** 2)) + 1e-8)
         rms_pre = float(np.sqrt(np.mean(pre_noise ** 2)) + 1e-8)
-        snr_db = float(np.log10((rms_wake / rms_pre) + 1e-8))
+        snr_db = float(20.0 * np.log10((rms_wake / rms_pre) + 1e-8))
 
         features.extend([
             np.mean(centroid, axis=1), np.std(centroid, axis=1),

@@ -21,6 +21,19 @@ def make_onset_window(length: int, peak_offset: int = 32) -> np.ndarray:
         w[peak_offset:] = fall
     return w
 
+def make_edge_taper_window(length: int, taper_start: int = 16, taper_end: int = 64) -> np.ndarray:
+    """
+    Creates a gentle half-Tukey/Edge-Taper window for wake (only tapering the
+    first 16 samples and last 64 samples to prevent FFT spectral leakage while
+    keeping the middle at 1.0 gain).
+    """
+    w = np.ones(length, dtype=np.float64)
+    if taper_start > 0:
+        w[:taper_start] = 0.5 * (1.0 - np.cos(np.pi * np.arange(taper_start) / max(1, taper_start)))
+    if taper_end > 0:
+        w[-taper_end:] = 0.5 * (1.0 + np.cos(np.pi * np.arange(taper_end) / max(1, taper_end)))
+    return w
+
 def align_and_slice_waveform(waveform: np.ndarray):
     win_cfg = CFG["signal_window"]
     s_start_cfg = int(win_cfg["search_start_samples"])
@@ -35,7 +48,17 @@ def align_and_slice_waveform(waveform: np.ndarray):
 
     search_start = min(s_start_cfg, len(mono) // 6)
     search_end = max(search_start + 512, len(mono) - s_end_margin)
-    peak_idx = search_start + int(np.argmax(np.abs(mono[search_start:search_end])))
+    
+    # First-Arrival Onset Peak Alignment
+    abs_search = np.abs(mono[search_start:search_end])
+    global_max = float(np.max(abs_search)) + 1e-8
+    above_thresh = np.where(abs_search >= 0.35 * global_max)[0]
+    if len(above_thresh) > 0:
+        first_cross = int(above_thresh[0])
+        local_end = min(len(abs_search), first_cross + 128)
+        peak_idx = search_start + first_cross + int(np.argmax(abs_search[first_cross:local_end]))
+    else:
+        peak_idx = search_start + int(np.argmax(abs_search))
 
     # Ensure pre_noise strictly never includes or overlaps the peak transient
     if peak_idx > pre_guard + 32:
@@ -74,9 +97,8 @@ def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_
     peak_amp = np.max(np.abs(wake)) + 1e-8
     peak_offset = min(pre_peak, peak_idx)
     onset_window = make_onset_window(len(onset), peak_offset=peak_offset)
-    wake_window = make_onset_window(len(wake), peak_offset=peak_offset)
-
     norm_onset = (onset / peak_amp) * onset_window
+    wake_window = make_edge_taper_window(len(wake), taper_start=16, taper_end=64)
     norm_wake = (wake / peak_amp) * wake_window
 
     fft_onset = np.fft.rfft(norm_onset)
@@ -107,8 +129,8 @@ def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_
     hf_time_env = np.abs(np.fft.irfft(hf_fft))
     lf_time_env = np.abs(np.fft.irfft(lf_fft))
 
-    hf_arrival = int(np.argmax(hf_time_env[:256]))
-    lf_arrival = int(np.argmax(lf_time_env[:256]))
+    hf_arrival = int(np.argmax(hf_time_env[:512]))
+    lf_arrival = int(np.argmax(lf_time_env[:512]))
     dispersion_lag_ms = ((lf_arrival - hf_arrival) / sr) * 1000.0
     hf_to_lf_ratio = float(np.log10((np.sum(hf_time_env ** 2) + 1e-8) / (np.sum(lf_time_env ** 2) + 1e-8)))
 

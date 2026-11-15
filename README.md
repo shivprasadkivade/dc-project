@@ -236,6 +236,9 @@ uv run python -m src.holo.collect --label all --samples 50
 uv run python -m src.holo.collect --label left_tap --samples 50
 uv run python -m src.holo.collect --label right_tap --samples 50
 uv run python -m src.holo.collect --label noise --samples 50
+
+# Rapid 45-second interactive geofence boundary calibration (Section 7):
+uv run python -m src.holo.collect --calibrate-geofence
 ```
 *(Note: CLI flags also support `--class` as an alias for `--label` and `--count` for `--samples`.)*
 
@@ -283,14 +286,211 @@ For macOS microphone permissions and tester troubleshooting, see [`MAC_TESTER_GU
 
 ---
 
-## 7. V2 Repository Structure & Generated Artifacts
+## 7. Passive Acoustic Geofencing: Boundary Calibration & Training Guide
+
+### 7.1 What is the Acoustic Geofence?
+While the dual-branch ML + Fourier hybrid model accurately distinguishes Left Taps from Right Taps and ambient speech, physical vibrations outside the chassis (such as knocking on the desk near the laptop, resting a mug, or tapping the display bezel) can still transmit acoustic energy into the chassis.
+
+To solve this, **AcousticTap includes a Two-Stage Passive Acoustic Geofence (`src/holo/geofence.py`)** that operates as a perimeter gate before any gesture classification is performed:
+- **Stage 1 (Physical Invariant Safety Gates):** Evaluates physical invariants of direct metal impact transients in $< 0.1\text{ ms}$:
+  - High-Frequency to Low-Frequency energy ratio ($z_0 \ge \min(\text{HF/LF})$) — direct aluminum sheet excitation vs rubber foot low-pass dampening
+  - Attack-to-Decay Ratio ($z_1 \ge \min(\text{ADR})$) — crisp metal rise time vs sluggish desk shock wave
+  - Onset Crest Factor ($z_2 \ge \min(\text{Crest})$) — spiky metal transient vs rounded desk bump
+  - Lamb-wave dispersion lag window ($\Delta t_{\text{disp}} \in [-6.5, 3.5]\text{ ms}$)
+- **Stage 2 (Supervised Boundary Discriminator & Spatial Manifold):** Evaluates a 20-dimensional spatial subspace vector $\mathbf{z} \in \mathbb{R}^{20}$ (combining group delays, normalized onset sub-band energies, and resonance ratios) trained directly on **inside boundary samples vs. outside desk knock samples**:
+
+$$P(\text{inside} \mid \mathbf{z}) = \sigma(\mathbf{w}^T \mathbf{z} + b)$$
+
+When an impact occurs:
+1. **The Geofence verifies boundary status FIRST:**
+   - If $P(\text{inside}) < \tau_{\text{boundary}}$ or Stage 1 fails: **BLOCKED IMMEDIATELY**. Gesture prediction is bypassed, and no keystroke macro can fire.
+   - If $P(\text{inside}) \ge \tau_{\text{boundary}}$: **PASSED**. The hybrid model proceeds to classify Left vs. Right tap.
+
+```text
+       [Chassis / Desk Vibration Transient]
+                         |
+                         v
+       +------------------------------------+
+       |   Stage 1: Physical Invariant Gate |
+       |   - Attack-to-Decay Ratio (ADR)    |
+       |   - Crest Factor & HF/LF Ratio     |
+       |   - Lamb Dispersion Window         |
+       +-----------------+------------------+
+                         | Passed
+                         v
+       +------------------------------------+
+       | Stage 2: Supervised Boundary Gate  |
+       | P(inside) >= 0.50 & d_in <= d_max  |
+       +-----------------+------------------+
+                         |
+           +-------------+-------------+
+           | In-Bounds                 | Out-of-Bounds (Desk Bump)
+           v                           v
+  [Gesture Classifier]        [GEOFENCE: OUTSIDE BOUNDARY]
+  (Left Tap vs Right Tap)     (Macro Blocked / Never Triggered)
+           |
+           v
+   [Trigger Shortcut]
+  (Cmd+C / Cmd+V)
+```
+
+---
+
+### 7.2 Dataset Separation: Center Data vs. Boundary Data
+
+AcousticTap strictly separates center gesture training data from boundary calibration data so neither contaminates the other:
+
+- **Center Gesture Datasets (`dataset/left_tap/`, `dataset/right_tap/`, `dataset/noise/`):**
+  Captured by tapping firmly in the **center zone** of the palm rests. These train the hybrid ML + Fourier classifier to distinguish left from right.
+- **Dedicated Boundary Datasets (`dataset/boundary/`):**
+  - **`dataset/boundary/inside/`:** Taps recorded along the **perimeter edges** of the palm rests (near the trackpad cutout, chassis outer edges, and top border).
+  - **`dataset/boundary/outside/`:** Knocks recorded on the **desk surface** (2–15 cm around laptop) and upper keyboard bezel.
+
+---
+
+### 7.3 Marking Boundaries: The Interactive Calibration Wizard
+
+To record your boundary data, run the interactive boundary wizard:
+
+```bash
+uv run python -m src.holo.collect --calibrate-geofence
+```
+
+*(Optional: tune microphone trigger sensitivity with `--threshold`, e.g. `--threshold 0.015` if your room is quiet or taps are soft).*
+
+#### Where and How to Tap:
+
+The wizard guides you through three distinct phases:
+
+1. **Phase 1: Inside Boundary — Left Palm Rest Perimeter (15 taps)**
+   - **Where:** Along the **outer edges and borders** of the LEFT palm rest (near the trackpad edge, outer chassis edge, top border). **Do not tap the center.**
+   - **Saves strictly to:** `dataset/boundary/inside/boundary_left_xxxx.npy`
+
+2. **Phase 2: Inside Boundary — Right Palm Rest Perimeter (15 taps)**
+   - **Where:** Along the **outer edges and borders** of the RIGHT palm rest (near the trackpad edge, outer chassis edge, top border). **Do not tap the center.**
+   - **Saves strictly to:** `dataset/boundary/inside/boundary_right_xxxx.npy`
+
+3. **Phase 3: Outside Boundary — Desk Surface & Bezel (15 knocks)**
+   - **Where:** 
+     - **Desk Surface:** Knock or tap with a knuckle/fingertip directly on your table or desk **2 to 15 cm around your laptop** (left side, right side, and front).
+     - **Upper Keyboard Bezel:** Tap 2–3 times on the metal strip above the function keys / touch bar.
+   - **Saves strictly to:** `dataset/boundary/outside/boundary_outside_xxxx.npy`
+
+You can also record additional boundary samples into either zone independently:
+```bash
+uv run python -m src.holo.collect --boundary inside --samples 15
+uv run python -m src.holo.collect --boundary outside --samples 15
+```
+
+---
+
+### 7.4 Collecting Center Gesture Data
+
+To collect clean center training samples for the Left Tap, Right Tap, and Noise classes:
+
+```bash
+# Group interleaved mode (recommended):
+uv run python -m src.holo.collect --label all --samples 30
+
+# Or single class:
+uv run python -m src.holo.collect --label left_tap --samples 30
+uv run python -m src.holo.collect --label right_tap --samples 30
+uv run python -m src.holo.collect --label noise --samples 30
+```
+*(Always tap firmly in the **center zone** of the respective palm rest when prompted).*
+
+---
+
+### 7.5 Training the Hybrid Model and Geofence
+
+Once gesture data and boundary data are recorded, run the unified training pipeline:
+
+```bash
+uv run python -m src.holo.train --features enhanced
+```
+
+#### What Happens During Training:
+1. **Model Training:** Trains candidate hybrid models (RBF-SVM, Random Forest, Extra Trees + Fourier Triangulator) on center gesture data (`left_tap`, `right_tap`, `noise`).
+2. **Geofence Fitting:** Combines perimeter taps (`dataset/boundary/inside/`) and center palm rest taps as the in-bounds set, and pairs them against `dataset/boundary/outside/` desk knocks to fit the supervised boundary discriminator and covariance manifolds.
+3. **Boundary Verification:** Reports In-Bounds False Rejection Rate (FRR) and Out-of-Bounds Rejection Rate (OOB-RR).
+4. **Serialization:** Bundles the winner and the fitted `AcousticGeofenceValidator` into `models/acoustictap_model.joblib`.
+
+Terminal output:
+```text
+======================================================================
+--> Winner: Hybrid_SVM_RBF (50% ML + 50% FFT)
+Holdout Classification Accuracy: 96.67%
+Geofence Inside False Rejection Rate (FRR): 0.00% (0/60 inside taps rejected)
+Geofence Outside Rejection Rate (OOB-RR):   100.00% (15/15 desk knocks blocked)
+======================================================================
+```
+
+---
+
+### 7.6 Verifying and Live-Testing the Geofence
+
+#### 1. Real-Time Dry-Run Testing
+Test detection and boundary gating without firing OS keystrokes:
+```bash
+uv run python -m src.holo.listen --dry-run
+```
+
+- **Knock on your desk or table:** The geofence blocks the event immediately:
+  ```text
+  [GEOFENCE: OUTSIDE BOUNDARY] Blocked external impact (outside boundary: desk knock / external vibration (prob_in=0.02 < 0.50, d_in=8.14)) | 1.4 ms
+  ```
+  *(Notice: It does not guess Left or Right tap, and never triggers shortcuts!)*
+
+- **Tap on your palm rest:** The geofence passes the strike and dispatches the gesture:
+  ```text
+  [GEOFENCE: INSIDE (prob=0.98)] Pred: left_tap   | Conf: 0.94 (Req: 0.58) [ML:left_tap(0.92) + FFT:left_tap(0.96)] | 4.8 ms
+      [DRY-RUN] Would trigger shortcut for: left_tap (Cmd+C/V)
+  ```
+
+#### 2. Offline Holdout Evaluation
+```bash
+uv run python -m src.holo.evaluate --holdout-only
+```
+
+#### 3. Disable Geofence (For Comparison)
+```bash
+uv run python -m src.holo.listen --no-geofence
+```
+
+---
+
+### 7.7 Geofence Configuration Reference (`config/config.yaml`)
+
+```yaml
+geofence:
+  enabled: true                    # Set to false to disable geofence globally
+  boundary_threshold: 0.50         # Probability threshold to accept transient as inside boundary [0.0 - 1.0]
+  min_hf_lf_ratio_db: -16.0        # Stage 1: Min high-to-low frequency energy ratio (dB)
+  min_attack_decay_ratio: 1.40     # Stage 1: Min onset attack-to-decay energy ratio
+  min_crest_factor: 3.5            # Stage 1: Min onset peak-to-RMS ratio
+  dispersion_window_ms: [-6.5, 3.5]# Stage 1: Allowable Lamb-wave dispersion lag window (ms)
+  max_inside_distance: 6.50        # Stage 2: Max allowed Mahalanobis distance to inside manifold
+  surface_tolerance_scale: 1.15    # Stage 2: Covariance expansion factor for varied table materials
+```
+
+---
+
+## 8. V2 Repository Structure & Generated Artifacts
 
 ```text
 ├── MAC_TESTER_GUIDE.md                  # Instructions and troubleshooting for MacBook testers
 ├── README.md                            # Chapter 2: Hybrid Fourier documentation (this file)
 ├── benchmark_report.py                  # Automated physics & latency benchmark suite
 ├── pyproject.toml                       # Project metadata and uv dependencies
+├── config/
+│   └── config.yaml                      # Centralized configuration (audio, ML, Fourier & geofence)
 ├── dataset/                             # Recorded .npy structure-borne transient files
+│   ├── left_tap/                        # In-bounds left palm rest center transient samples
+│   ├── right_tap/                       # In-bounds right palm rest center transient samples
+│   ├── noise/                           # Ambient acoustic noise & key strike samples
+│   └── boundary/                        # Dedicated boundary calibration datasets
+│       ├── inside/                      # Perimeter boundary taps (left & right borders)
+│       └── outside/                     # External desk knocks, table bumps & bezel strikes
 ├── models/                              # Versioned hybrid model bundles and leaderboard.csv
 ├── reports/                             # Experimental sub-reports and physics figures
 │   ├── fourier_analysis_report.md       # Lamb-wave dispersion & 12-band spectral data
@@ -307,8 +507,9 @@ For macOS microphone permissions and tester troubleshooting, see [`MAC_TESTER_GU
     ├── detector.py                      # Pre-trigger ring buffer impulse detector
     ├── features.py                      # 70-dim Onset/Decay MFCC & spectral extractor
     ├── triangulation.py                 # 43-dim Lamb-wave dispersion & FourierTriangulator
-    ├── collect.py                       # Interactive single/group sample collection CLI
-    ├── train.py                         # Dual-branch training, tuning & fusion weight search
-    ├── evaluate.py                      # Holdout evaluation and confusion matrix reporting
-    └── listen.py                        # Low-latency hybrid listener with typing suppression
+    ├── geofence.py                      # Two-stage supervised boundary discriminator & manifold
+    ├── collect.py                       # Interactive center & boundary sample collection CLI
+    ├── train.py                         # Dual-branch training, tuning, fusion weight search & geofence fitting
+    ├── evaluate.py                      # Holdout evaluation, confusion matrix & geofence rejection reporting
+    └── listen.py                        # Low-latency hybrid listener with geofence & typing suppression
 ```

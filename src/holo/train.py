@@ -15,62 +15,20 @@ from sklearn.pipeline import Pipeline
 from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 
-from .config import CFG, DATA_DIR, MODEL_DIR, VERSIONS_DIR, RESULTS_DIR, MODEL_PATH, CLASSES, SAMPLE_RATE
+from .config import (
+    CFG,
+    DATA_DIR,
+    BOUNDARY_INSIDE_DIR,
+    BOUNDARY_OUTSIDE_DIR,
+    MODEL_DIR,
+    VERSIONS_DIR,
+    RESULTS_DIR,
+    MODEL_PATH,
+    CLASSES,
+)
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector, FourierTriangulator
 from .geofence import AcousticGeofenceValidator
-
-def synthesize_fallback_waveform(label: str, sr: int = SAMPLE_RATE) -> np.ndarray:
-    """Generates a physically grounded acoustic impulse fixture when local dataset is missing."""
-    duration = 5632
-    t = np.arange(duration) / sr
-    signal = np.zeros(duration, dtype=np.float64)
-    peak_idx = 1536 + 32
-    t_transient = t[peak_idx:] - t[peak_idx]
-
-    if "left" in label:
-        decay = np.exp(-t_transient / 0.018)
-        modes = [(240.0, 0.40), (480.0, 0.30), (880.0, 0.20), (1450.0, 0.10)]
-    elif "right" in label:
-        decay = np.exp(-t_transient / 0.014)
-        modes = [(320.0, 0.35), (640.0, 0.35), (1120.0, 0.20), (1920.0, 0.10)]
-    elif "desk" in label or "oob" in label:
-        # Desk knock filtered through rubber feet: slow rise time, low-pass damped, long low-freq tail
-        decay = np.exp(-t_transient / 0.045)
-        modes = [(85.0, 0.60), (160.0, 0.30), (310.0, 0.10)]
-    else:
-        # Ambient noise
-        decay = np.exp(-t_transient / 0.025)
-        modes = [(180.0, 0.5), (350.0, 0.5)]
-
-    for freq, amp in modes:
-        signal[peak_idx:] += amp * np.sin(2.0 * np.pi * freq * t_transient) * decay
-
-    if not ("desk" in label or "oob" in label):
-        attack_len = min(64, duration - peak_idx)
-        signal[peak_idx : peak_idx + attack_len] += 0.5 * np.hanning(attack_len * 2)[attack_len:]
-    else:
-        # External desk bump: softened attack from rubber foot isolation
-        attack_len = min(128, duration - peak_idx)
-        signal[peak_idx : peak_idx + attack_len] += 0.15 * np.hanning(attack_len * 2)[attack_len:]
-
-    ambient = np.random.normal(0, 0.005, duration)
-    wf = signal + ambient
-    max_amp = np.max(np.abs(wf)) + 1e-8
-    return (wf / max_amp * 0.75).astype(np.float32)
-
-def ensure_dataset(data_dir: Path = DATA_DIR):
-    """Ensures at least minimum sample fixtures exist for training."""
-    data_dir.mkdir(parents=True, exist_ok=True)
-    targets = ["left_tap", "right_tap", "noise", "oob_desk"]
-    for lbl in targets:
-        lbl_dir = data_dir / lbl
-        lbl_dir.mkdir(parents=True, exist_ok=True)
-        existing = list(lbl_dir.glob("*.npy"))
-        if len(existing) < 15:
-            for idx in range(len(existing), 25):
-                wf = synthesize_fallback_waveform(lbl)
-                np.save(lbl_dir / f"{lbl}_{idx:04d}.npy", wf)
 
 def build_candidates_from_config() -> Dict[str, Pipeline]:
     tr_cfg = CFG.get("training", {})
@@ -156,8 +114,6 @@ def evaluate_hybrid_cv(
     return ml_f1, fourier_f1, best_hyb_f1, best_w
 
 def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optional[float] = None):
-    ensure_dataset(DATA_DIR)
-
     tr_cfg = CFG.get("training", {})
     hyb_cfg = CFG.get("hybrid_fusion", {})
     mode = feature_set if feature_set is not None else CFG.get("features", {}).get("mode", "enhanced")
@@ -173,14 +129,11 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
         weight_grid = [float(hyb_cfg.get("fourier_weight", 0.50))]
 
     # -----------------------------------------------------------------
-    # Step 4.1: Partition In-Bounds Target Classes vs OOB Calibration Classes
+    # Step 1: Load Core Gesture Classes (left_tap, right_tap, noise)
     # -----------------------------------------------------------------
     in_classes = [c for c in CLASSES if not c.startswith("oob_")]
-
     X_ml_in, X_fourier_in, y_in, y_labels_in = [], [], [], []
-    X_ml_oob, X_fourier_oob, y_oob_labels = [], [], []
 
-    # 1. Load in-bounds classes
     for idx, label in enumerate(in_classes):
         folder = DATA_DIR / label
         if not folder.exists():
@@ -192,36 +145,98 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
             y_in.append(idx)
             y_labels_in.append(label)
 
-    # 2. Load out-of-bounds classes (prefixed with oob_)
-    for folder in sorted(DATA_DIR.iterdir()):
-        if folder.is_dir() and folder.name.startswith("oob_"):
-            for file in sorted(folder.glob("*.npy")):
+    X_ml_in = np.array(X_ml_in, dtype=np.float32) if X_ml_in else np.empty((0, 70), dtype=np.float32)
+    X_fourier_in = np.array(X_fourier_in, dtype=np.float64) if X_fourier_in else np.empty((0, 43), dtype=np.float64)
+    y_in = np.array(y_in, dtype=np.int64) if y_in else np.empty(0, dtype=np.int64)
+    y_labels_in = np.array(y_labels_in) if y_labels_in else np.empty(0, dtype=str)
+
+    if len(y_in) == 0:
+        raise ValueError(
+            f"No gesture samples found in {DATA_DIR}!\n"
+            f"Please collect training samples first using:\n"
+            f"  uv run python -m src.holo.collect --label all --samples 30"
+        )
+
+    unique_classes = np.unique(y_in)
+    if len(unique_classes) < 2:
+        raise ValueError(
+            f"Found samples for only {len(unique_classes)} class ({[in_classes[c] for c in unique_classes]}).\n"
+            f"Training requires at least 2 classes (e.g. left_tap and right_tap).\n"
+            f"Please record additional classes using 'uv run python -m src.holo.collect'."
+        )
+
+    # -----------------------------------------------------------------
+    # Step 2: Load Dedicated Geofence Boundary Datasets
+    # -----------------------------------------------------------------
+    X_ml_bound_in, X_four_bound_in, bound_in_labels = [], [], []
+    X_ml_bound_out, X_four_bound_out = [], []
+
+    # Inside boundary samples from dataset/boundary/inside/
+    if BOUNDARY_INSIDE_DIR.exists():
+        for file in sorted(BOUNDARY_INSIDE_DIR.glob("*.npy")):
+            waveform = np.load(file)
+            X_ml_bound_in.append(extract_features(waveform, feature_set=mode))
+            X_four_bound_in.append(extract_fourier_triangulation_vector(waveform))
+            fname = file.name.lower()
+            if "left" in fname:
+                bound_in_labels.append("left_tap")
+            elif "right" in fname:
+                bound_in_labels.append("right_tap")
+            else:
+                bound_in_labels.append("boundary_in")
+
+    # Also include in-bounds palm rest gesture taps (left_tap and right_tap) as inside boundary
+    for i in range(len(y_in)):
+        if y_labels_in[i] in ["left_tap", "right_tap"]:
+            X_ml_bound_in.append(X_ml_in[i])
+            X_four_bound_in.append(X_fourier_in[i])
+            bound_in_labels.append(y_labels_in[i])
+
+    # Outside boundary samples from dataset/boundary/outside/
+    if BOUNDARY_OUTSIDE_DIR.exists():
+        for file in sorted(BOUNDARY_OUTSIDE_DIR.glob("*.npy")):
+            waveform = np.load(file)
+            X_ml_bound_out.append(extract_features(waveform, feature_set=mode))
+            X_four_bound_out.append(extract_fourier_triangulation_vector(waveform))
+
+    # Also load any legacy oob_* directories in DATA_DIR
+    for oob_dir in sorted(DATA_DIR.glob("oob_*")):
+        if oob_dir.is_dir():
+            for file in sorted(oob_dir.glob("*.npy")):
                 waveform = np.load(file)
-                X_ml_oob.append(extract_features(waveform, feature_set=mode))
-                X_fourier_oob.append(extract_fourier_triangulation_vector(waveform))
-                y_oob_labels.append(folder.name)
+                X_ml_bound_out.append(extract_features(waveform, feature_set=mode))
+                X_four_bound_out.append(extract_fourier_triangulation_vector(waveform))
 
-    X_ml_in = np.array(X_ml_in, dtype=np.float32)
-    X_fourier_in = np.array(X_fourier_in, dtype=np.float64)
-    y_in = np.array(y_in, dtype=np.int64)
-    y_labels_in = np.array(y_labels_in)
+    # Also include the "noise" class samples as negative examples for boundary training
+    for i in range(len(y_in)):
+        if y_labels_in[i] == "noise":
+            X_ml_bound_out.append(X_ml_in[i])
+            X_four_bound_out.append(X_fourier_in[i])
 
-    X_ml_oob = np.array(X_ml_oob, dtype=np.float32) if X_ml_oob else np.empty((0, 70), dtype=np.float32)
-    X_fourier_oob = np.array(X_fourier_oob, dtype=np.float64) if X_fourier_oob else np.empty((0, 43), dtype=np.float64)
+    X_ml_bound_in = np.array(X_ml_bound_in, dtype=np.float32) if X_ml_bound_in else np.empty((0, 70), dtype=np.float32)
+    X_four_bound_in = np.array(X_four_bound_in, dtype=np.float64) if X_four_bound_in else np.empty((0, 43), dtype=np.float64)
+    X_ml_bound_out = np.array(X_ml_bound_out, dtype=np.float32) if X_ml_bound_out else np.empty((0, 70), dtype=np.float32)
+    X_four_bound_out = np.array(X_four_bound_out, dtype=np.float64) if X_four_bound_out else np.empty((0, 43), dtype=np.float64)
 
-    if len(np.unique(y_in)) < 2:
-        raise ValueError("Need at least 2 in-bounds classes for training!")
-
+    # -----------------------------------------------------------------
+    # Step 3: Train & Validate Candidate Hybrid Gesture Classifiers
+    # -----------------------------------------------------------------
     test_size = float(tr_cfg.get("test_size", 0.20))
     indices = np.arange(len(y_in))
-    train_idx, test_idx = train_test_split(indices, test_size=test_size, stratify=y_in, random_state=seed)
+    min_class_count = min(np.bincount(y_in))
+    stratify_target = y_in if min_class_count >= 2 else None
+    actual_folds = min(cv_folds, max(2, min_class_count))
+
+    train_idx, test_idx = train_test_split(indices, test_size=test_size, stratify=stratify_target, random_state=seed)
 
     print("\n" + "=" * 70)
-    print(f"[TRAIN HYBRID & GEOFENCE] In-Bounds Samples: {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout)")
-    print(f"In-Bounds Target Classes: {in_classes}")
-    print(f"OOB Calibration Samples: {len(X_ml_oob)} ({list(set(y_oob_labels)) if y_oob_labels else 'None'})")
-    print(f"ML Feature Dim: {X_ml_in.shape[1]} | Fourier Dim: {X_fourier_in.shape[1]}")
-    print(f"Tuning: {'ENABLED' if do_opt else 'DISABLED'} | Weight Grid: {weight_grid}")
+    print(f"[TRAIN HYBRID & GEOFENCE] In-Bounds Gesture Samples: {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout)")
+    print(f"Target Classes: {in_classes}")
+    print(f"Geofence Inside Boundary Samples:  {len(X_ml_bound_in)} (perimeter boundary + center palm rest)")
+    print(f"Geofence Outside Boundary Samples: {len(X_ml_bound_out)} (desk knocks & table vibrations)")
+    if len(X_ml_bound_out) == 0:
+        print("  [Notice] No outside boundary data found in dataset/boundary/outside.")
+        print("           Run 'uv run python -m src.holo.collect --calibrate-geofence' to record desk strikes.")
     print("=" * 70 + "\n")
 
     candidates = build_candidates_from_config()
@@ -235,14 +250,14 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     best_name, best_hybrid_cv, best_ml_pipe, best_opt_w, best_params = None, -1.0, None, 0.5, {}
 
-    # Fit Geofence Validator
+    # Fit Geofence Validator strictly using boundary data
     gf_validator = AcousticGeofenceValidator(CFG)
     gf_validator.fit(
-        ml_features=X_ml_in[train_idx],
-        fourier_features=X_fourier_in[train_idx],
-        labels=y_labels_in[train_idx],
-        oob_ml=X_ml_oob,
-        oob_fourier=X_fourier_oob,
+        inside_ml=X_ml_bound_in,
+        inside_fourier=X_four_bound_in,
+        outside_ml=X_ml_bound_out,
+        outside_fourier=X_four_bound_out,
+        inside_labels=np.array(bound_in_labels),
     )
 
     with open(leaderboard_path, mode="a", newline="") as csvfile:
@@ -259,14 +274,14 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
             tuned_params = {}
 
             if do_opt and name in param_grids:
-                grid = GridSearchCV(pipeline, param_grids[name], cv=cv_folds, scoring="f1_macro", n_jobs=-1)
+                grid = GridSearchCV(pipeline, param_grids[name], cv=actual_folds, scoring="f1_macro", n_jobs=-1)
                 grid.fit(X_ml_in[train_idx], y_in[train_idx])
                 tuned_pipeline = grid.best_estimator_
                 tuned_params = grid.best_params_
 
             ml_cv, four_cv, hybrid_cv, opt_w = evaluate_hybrid_cv(
                 tuned_pipeline, X_ml_in[train_idx], X_fourier_in[train_idx], y_in[train_idx],
-                weight_grid=weight_grid, n_splits=cv_folds, seed=seed
+                weight_grid=weight_grid, n_splits=actual_folds, seed=seed
             )
 
             # Evaluate on unseen holdout split
@@ -314,7 +329,7 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
                 )
 
     # -----------------------------------------------------------------
-    # Step 4.2: Final Evaluation of Winner + Geofence Verification Metrics
+    # Step 4: Final Production Evaluation & Geofence Boundary Benchmark
     # -----------------------------------------------------------------
     final_ml = clone(best_ml_pipe)
     final_ml.fit(X_ml_in, y_in)
@@ -328,38 +343,37 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
     report_str = classification_report(y_in[test_idx], best_preds, target_names=in_classes)
     cm = confusion_matrix(y_in[test_idx], best_preds)
 
-    # In-Bounds Tap FRR Calculation (evaluated on valid macro taps, excluding noise)
+    # In-Bounds Tap FRR Calculation (percentage of real palm rest taps falsely rejected by geofence)
     valid_tap_indices = [i for i in range(len(X_ml_in)) if y_labels_in[i] != "noise"]
     in_rejected = 0
     for i in valid_tap_indices:
-        dec = gf_validator.verify(X_ml_in[i], X_fourier_in[i], predicted_class=y_labels_in[i])
+        dec = gf_validator.verify(X_ml_in[i], X_fourier_in[i])
         if not dec.passed:
             in_rejected += 1
     frr = float(in_rejected / max(1, len(valid_tap_indices)))
 
-    # OOB Rejection Rate Calculation
-    oob_rr_str = "N/A (no oob_* samples found, using analytical Ledoit-Wolf threshold)"
+    # Out-of-Bounds Rejection Rate (percentage of desk knocks correctly blocked by geofence)
+    oob_rr_str = "N/A (No outside boundary samples in dataset/boundary/outside/)"
     oob_rr = 1.0
     stage_breakdown = {}
-    if len(X_ml_oob) > 0:
+    if len(X_ml_bound_out) > 0:
         oob_blocked = 0
-        for i in range(len(X_ml_oob)):
-            dec = gf_validator.verify(X_ml_oob[i], X_fourier_oob[i])
+        for i in range(len(X_ml_bound_out)):
+            dec = gf_validator.verify(X_ml_bound_out[i], X_four_bound_out[i])
             if not dec.passed:
                 oob_blocked += 1
                 stage = dec.stage_failed or "unknown"
                 stage_breakdown[stage] = stage_breakdown.get(stage, 0) + 1
-        oob_rr = float(oob_blocked / len(X_ml_oob))
-        oob_rr_str = f"{oob_rr * 100:.2f}% ({oob_blocked}/{len(X_ml_oob)} blocked)"
+        oob_rr = float(oob_blocked / len(X_ml_bound_out))
+        oob_rr_str = f"{oob_rr * 100:.2f}% ({oob_blocked}/{len(X_ml_bound_out)} desk knocks blocked)"
 
     print("\n" + "=" * 70)
-    print(f"--> Winner: Hybrid_{best_name} (5-Fold CV Macro F1: {best_hybrid_cv:.4f})")
-    print(f"Optimal Fourier Weight: {best_opt_w:.2f} ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% FFT)")
-    print(f"\nHoldout Test Accuracy: {holdout_acc * 100:.2f}%")
-    print(f"Geofence In-Bounds False Rejection Rate (FRR): {frr * 100:.2f}%")
-    print(f"Geofence Out-of-Bounds Rejection Rate (OOB-RR): {oob_rr_str}")
+    print(f"--> Winner: Hybrid_{best_name} ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% FFT)")
+    print(f"Holdout Classification Accuracy: {holdout_acc * 100:.2f}%")
+    print(f"Geofence Inside False Rejection Rate (FRR): {frr * 100:.2f}% ({in_rejected}/{len(valid_tap_indices)} inside taps rejected)")
+    print(f"Geofence Outside Rejection Rate (OOB-RR):   {oob_rr_str}")
     if stage_breakdown:
-        print(f"  OOB Rejection Breakdown by Stage: {stage_breakdown}")
+        print(f"  OOB Rejection Breakdown: {stage_breakdown}")
     print("=" * 70)
 
     # Write Markdown test reports
@@ -368,13 +382,12 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
     md_content = (
         f"# AcousticTap Hybrid & Geofence Test Report ({timestamp})\n\n"
         f"- **Winning Architecture:** `Hybrid_{best_name}` ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% Fourier)\n"
-        f"- **Best Tuned Hyperparameters:** `{best_params}`\n"
         f"- **In-Bounds Dataset Samples:** {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout)\n"
-        f"- **5-Fold Cross-Validation Macro F1:** `{best_hybrid_cv:.4f}`\n"
+        f"- **Geofence Inside Boundary Samples:** {len(X_ml_bound_in)}\n"
+        f"- **Geofence Outside Boundary Samples:** {len(X_ml_bound_out)}\n"
         f"- **Holdout Test Accuracy:** `{holdout_acc*100:.2f}%`\n"
-        f"- **Geofence Mahalanobis Threshold:** `{gf_validator.threshold:.2f}`\n"
-        f"- **Geofence In-Bounds FRR:** `{frr*100:.2f}%`\n"
-        f"- **Geofence Out-of-Bounds Rejection Rate (OOB-RR):** `{oob_rr_str}`\n\n"
+        f"- **Geofence Inside FRR:** `{frr*100:.2f}%`\n"
+        f"- **Geofence Outside Rejection Rate (OOB-RR):** `{oob_rr_str}`\n\n"
         f"## Holdout Classification Report\n```text\n{report_str}\n```\n\n"
         f"## Confusion Matrix (`{in_classes}`)\n```text\n{cm}\n```\n"
     )

@@ -4,21 +4,21 @@ Analysis of which audio and mechanical features contribute most to separating Le
 
 | Rank | Feature Name | Domain Category | Random Forest Importance | ANOVA F-Score | Physical Interpretation |
 | :---: | :--- | :--- | :---: | :---: | :--- |
-| **#01** | `Decay_MFCC_12` | Resonance Decay | **5.47%** | 2009.9 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#02** | `Onset_MFCC_12` | Onset Attack | **4.57%** | 1228.9 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#03** | `Onset_MFCC_14` | Onset Attack | **4.18%** | 1848.4 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#04** | `Decay_MFCC_17` | Resonance Decay | **4.16%** | 4094.1 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#05** | `Decay_MFCC_05` | Resonance Decay | **4.13%** | 2549.2 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#06** | `Onset_MFCC_15` | Onset Attack | **3.96%** | 798.8 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#07** | `Onset_MFCC_17` | Onset Attack | **3.89%** | 3035.4 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#08** | `Decay_MFCC_15` | Resonance Decay | **3.68%** | 1135.7 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#09** | `Decay_MFCC_06` | Resonance Decay | **3.59%** | 512.4 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#10** | `Decay_MFCC_14` | Resonance Decay | **3.26%** | 3484.7 | Reflects cavity resonance and speaker grille boundary reflections. |
-| **#11** | `Onset_MFCC_06` | Onset Attack | **3.17%** | 169.1 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#12** | `Onset_MFCC_07` | Onset Attack | **2.96%** | 571.1 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#13** | `Std_MFCC_03` | Spectral Variance | **2.94%** | 3523.9 | Frequency variation over time across the impact window. |
-| **#14** | `Onset_MFCC_04` | Onset Attack | **2.49%** | 4251.2 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
-| **#15** | `Decay_MFCC_08` | Resonance Decay | **2.31%** | 173.8 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#01** | `Decay_MFCC_12` | Resonance Decay | **7.04%** | 738.8 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#02** | `Onset_MFCC_07` | Onset Attack | **6.59%** | 210.2 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
+| **#03** | `Decay_MFCC_07` | Resonance Decay | **6.10%** | 470.8 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#04** | `Decay_MFCC_11` | Resonance Decay | **5.65%** | 154.2 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#05** | `Decay_MFCC_15` | Resonance Decay | **5.00%** | 352.9 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#06** | `Onset_MFCC_15` | Onset Attack | **4.90%** | 454.6 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
+| **#07** | `Decay_MFCC_03` | Resonance Decay | **3.50%** | 186.0 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#08** | `Std_MFCC_01` | Spectral Variance | **3.44%** | 85.1 | Frequency variation over time across the impact window. |
+| **#09** | `Spectral_Flatness_Mean` | Spectral Variance | **3.30%** | 220.4 | Frequency variation over time across the impact window. |
+| **#10** | `Decay_MFCC_10` | Resonance Decay | **3.30%** | 707.9 | Reflects cavity resonance and speaker grille boundary reflections. |
+| **#11** | `Std_MFCC_02` | Spectral Variance | **2.92%** | 712.6 | Frequency variation over time across the impact window. |
+| **#12** | `SNR_dB` | Spectral Variance | **2.78%** | 29.2 | Frequency variation over time across the impact window. |
+| **#13** | `Onset_MFCC_14` | Onset Attack | **2.76%** | 226.0 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
+| **#14** | `Spectral_Centroid_Mean` | Spectral Shape | **2.42%** | 31.9 | Center frequency of acoustic energy; distinguishes tap thump from key clatter. |
+| **#15** | `Onset_MFCC_12` | Onset Attack | **2.38%** | 191.9 | Captures microsecond ballistic strike energy distribution before chassis reflections. |
 
 ### Key Analytical Takeaways
 - **Onset Dominance:** The first 3 STFT frames of the impact (`Onset_MFCC_00` to `Onset_MFCC_04`) account for over **40%** of total model decision weight.

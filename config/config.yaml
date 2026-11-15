@@ -112,12 +112,11 @@ listener:
 
 geofence:
   enabled: true
-  # Stage 1: Physical invariant hard gates
-  min_hf_lf_ratio_db: -14.0
-  min_attack_decay_ratio: 1.85
-  min_crest_factor: 4.2
-  dispersion_window_ms: [-5.5, 2.5]
-  # Stage 2: Spatial manifold (Ledoit-Wolf Mahalanobis)
-  mahalanobis_threshold: 5.90
+  boundary_threshold: 0.62
+  min_hf_lf_ratio_db: -14.5
+  min_attack_decay_ratio: 3.50   # Updated for proper 10*log10 dB scale
+  min_crest_factor: 3.80
+  dispersion_window_ms: [-5.0, 3.0]
+  max_inside_distance: 5.80
   surface_tolerance_scale: 1.15
   class_conditional: true

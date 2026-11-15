@@ -7,7 +7,7 @@ import numpy as np
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score
-from .config import CFG, DATA_DIR, MODEL_PATH, CLASSES
+from .config import CFG, DATA_DIR, BOUNDARY_INSIDE_DIR, BOUNDARY_OUTSIDE_DIR, MODEL_PATH, CLASSES
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector
 
@@ -23,7 +23,7 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
     classes = saved.get("classes", CLASSES)
     geofence = saved.get("geofence", None)
 
-    # 1. Load In-Bounds Samples
+    # 1. Load In-Bounds Samples (left_tap, right_tap, noise)
     X_ml, X_fourier, y, y_labels = [], [], [], []
     for idx, label in enumerate(classes):
         folder = target_dir / label
@@ -36,8 +36,15 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
             y.append(idx)
             y_labels.append(label)
 
-    # 2. Load Out-of-Bounds Samples (prefixed with oob_)
+    # 2. Load Out-of-Bounds Samples (from dataset/boundary/outside/ and legacy oob_*)
     X_ml_oob, X_fourier_oob, y_oob_labels = [], [], []
+    if BOUNDARY_OUTSIDE_DIR.exists():
+        for file in sorted(BOUNDARY_OUTSIDE_DIR.glob("*.npy")):
+            waveform = np.load(file)
+            X_ml_oob.append(extract_features(waveform, feature_set=feature_set))
+            X_fourier_oob.append(extract_fourier_triangulation_vector(waveform))
+            y_oob_labels.append("boundary_outside")
+
     if target_dir.exists():
         for folder in sorted(target_dir.iterdir()):
             if folder.is_dir() and folder.name.startswith("oob_"):
@@ -47,10 +54,10 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
                     X_fourier_oob.append(extract_fourier_triangulation_vector(waveform))
                     y_oob_labels.append(folder.name)
 
-    X_ml = np.array(X_ml, dtype=np.float32)
-    X_fourier = np.array(X_fourier, dtype=np.float64)
-    y = np.array(y, dtype=np.int64)
-    y_labels = np.array(y_labels)
+    X_ml = np.array(X_ml, dtype=np.float32) if X_ml else np.empty((0, 70), dtype=np.float32)
+    X_fourier = np.array(X_fourier, dtype=np.float64) if X_fourier else np.empty((0, 43), dtype=np.float64)
+    y = np.array(y, dtype=np.int64) if y else np.empty(0, dtype=np.int64)
+    y_labels = np.array(y_labels) if y_labels else np.empty(0, dtype=str)
 
     if len(y) == 0:
         raise ValueError(f"No in-bounds samples found in {target_dir}")
@@ -61,7 +68,9 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
         seed = int(tr_cfg.get("random_seed", 42))
         test_size = float(tr_cfg.get("test_size", 0.20))
         indices = np.arange(len(y))
-        _, test_idx = train_test_split(indices, test_size=test_size, stratify=y, random_state=seed)
+        min_c = min(np.bincount(y))
+        strat = y if min_c >= 2 else None
+        _, test_idx = train_test_split(indices, test_size=test_size, stratify=strat, random_state=seed)
         X_ml, X_fourier, y, y_labels = X_ml[test_idx], X_fourier[test_idx], y[test_idx], y_labels[test_idx]
         eval_label = f"UNSEEN HOLDOUT SET ({len(test_idx)} samples)"
 
@@ -78,9 +87,9 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
     f1 = f1_score(y, preds, average="macro")
 
     print("\n" + "=" * 70)
-    print(f"[EVALUATE - {eval_label}] Model: {model_file.name} | In-Bounds Samples: {len(y)}")
+    print(f"[EVALUATE - {eval_label}] Model: {model_file.name} | Gesture Samples: {len(y)}")
     print(f"Accuracy: {acc * 100:.2f}% | Macro F1: {f1:.4f}\n")
-    print(classification_report(y, preds, target_names=classes))
+    print(classification_report(y, preds, target_names=[classes[i] for i in np.unique(y)]))
     print("Confusion Matrix:")
     print(confusion_matrix(y, preds))
 
@@ -94,8 +103,7 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
         in_rejected = 0
         in_stage_counts: Dict[str, int] = {}
         for i in valid_tap_indices:
-            pred_class = classes[preds[i]]
-            dec = geofence.verify(X_ml[i], X_fourier[i], predicted_class=pred_class)
+            dec = geofence.verify(X_ml[i], X_fourier[i])
             if not dec.passed:
                 in_rejected += 1
                 stage = dec.stage_failed or "unknown"
@@ -121,10 +129,10 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
                     stage = dec.stage_failed or "unknown"
                     oob_stage_counts[stage] = oob_stage_counts.get(stage, 0) + 1
             oob_rr = (oob_blocked / len(X_ml_oob)) * 100.0
-            print(f"  Out-of-Bounds Rejection Rate (OOB-RR): {oob_rr:.2f}% ({oob_blocked}/{len(X_ml_oob)} correctly blocked)")
-            print(f"    OOB Rejection Breakdown by Stage: {oob_stage_counts}")
+            print(f"  Out-of-Bounds Rejection Rate (OOB-RR): {oob_rr:.2f}% ({oob_blocked}/{len(X_ml_oob)} desk knocks correctly blocked)")
+            print(f"    OOB Rejection Breakdown: {oob_stage_counts}")
         else:
-            print("  Out-of-Bounds Rejection Rate (OOB-RR): N/A (no oob_* samples found, using analytical Ledoit-Wolf threshold)")
+            print("  Out-of-Bounds Rejection Rate (OOB-RR): N/A (no outside boundary samples in dataset/boundary/outside/)")
     print("=" * 70 + "\n")
 
 def build_parser() -> argparse.ArgumentParser:
