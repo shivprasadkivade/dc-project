@@ -57,9 +57,9 @@ AUTO_RECONNECT = bool(AUDIO_CFG.get("auto_reconnect", True))
 
 # Detector Constants
 DET_CFG = CFG.get("detector", {})
-RMS_THRESHOLD = float(DET_CFG.get("rms_threshold", 0.02))
+RMS_THRESHOLD = float(DET_CFG.get("rms_threshold", 0.015))
 PEAK_MULTIPLIER = float(DET_CFG.get("peak_multiplier", 1.8))
-BG_SNR_RATIO = float(DET_CFG.get("bg_snr_ratio", 2.3))
+BG_SNR_RATIO = float(DET_CFG.get("bg_snr_ratio", 2.2))
 BG_EMA_ALPHA = float(DET_CFG.get("bg_ema_alpha", 0.95))
 
 # Fusion Constants
