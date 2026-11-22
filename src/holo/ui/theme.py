@@ -239,6 +239,15 @@ def generate_qss(is_dark: bool) -> str:
         padding-left: 8px;
     }}
 
+    /* Checkbox */
+    QCheckBox {{
+        color: {txt};
+        font-weight: 500;
+        spacing: 8px;
+        min-height: 34px;
+        max-height: 34px;
+    }}
+
     /* Tables */
     QTableWidget {{
         background-color: {card};

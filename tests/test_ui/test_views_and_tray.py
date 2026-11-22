@@ -164,6 +164,29 @@ class TestViewsAndTray(unittest.TestCase):
         # Ensure refresh counts runs without exception
         view.refresh_dataset_counts()
 
+    def test_calibration_view_cancel_and_clear_console(self) -> None:
+        """Verifies clearing console during active task and cancelling never crashes."""
+        view = CalibrationView()
+        from src.holo.ui.views.calibration_view import CalibrationWorker
+        from PySide6.QtCore import QThread
+
+        worker = CalibrationWorker("collect_center", {"class": "all", "samples": 5})
+        view.worker = worker
+        view.worker_thread = QThread()
+        view.btn_stop_task.setEnabled(True)
+
+        # Append logs
+        view._append_log("Collecting samples [1/5]...\n")
+        # User clears console while running
+        view._clear_console()
+        self.assertEqual(view.console.toPlainText(), "")
+
+        # Cancel task
+        view._cancel_task()
+        self.assertFalse(view.btn_stop_task.isEnabled())
+        self.assertIsNone(view.worker)
+        self.assertIsNone(view.worker_thread)
+
     def test_settings_view_load_and_save(self) -> None:
         """SettingsView interacts with theme and confidence controls."""
         view = SettingsView()

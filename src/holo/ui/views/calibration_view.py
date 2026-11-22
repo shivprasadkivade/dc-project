@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import sys
 import io
+import ctypes
+import threading
 import logging
 from pathlib import Path
 from typing import Optional, Callable
+import numpy as np
+
 from PySide6.QtCore import Qt, QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget,
@@ -32,15 +36,22 @@ logger = logging.getLogger(__name__)
 
 
 class StreamRedirector(io.StringIO):
-    """Intercepts stdout/stderr writes and emits them via Qt Signal."""
+    """Intercepts stdout/stderr writes and emits them safely via Qt Signal."""
 
     def __init__(self, callback: Callable[[str], None]) -> None:
         super().__init__()
         self.callback = callback
+        self._is_active = True
+
+    def close(self) -> None:
+        self._is_active = False
 
     def write(self, s: str) -> int:
-        if s:
-            self.callback(s)
+        if self._is_active and s:
+            try:
+                self.callback(s)
+            except Exception:
+                pass
         return len(s)
 
     def flush(self) -> None:
@@ -58,18 +69,58 @@ class CalibrationWorker(QObject):
         self.task_type = task_type
         self.params = params
         self._is_cancelled = False
+        self.thread_ident: Optional[int] = None
+        self._active_detectors: list = []
+        self._redirector: Optional[StreamRedirector] = None
 
     def cancel(self) -> None:
+        """Signals cancellation, unblocks waiting audio queues, and raises KeyboardInterrupt."""
         self._is_cancelled = True
 
+        # 1. Unblock any detector event queues currently waiting on queue.get()
+        for det in list(self._active_detectors):
+            try:
+                det.event_queue.put(np.zeros(512, dtype=np.float32))
+            except Exception:
+                pass
+
+        # 2. Raise KeyboardInterrupt in the background worker thread
+        if self.thread_ident is not None:
+            try:
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(self.thread_ident),
+                    ctypes.py_object(KeyboardInterrupt)
+                )
+            except Exception:
+                pass
+
+        # 3. Push dummy item again to ensure queue thread wakes up to handle interrupt
+        for det in list(self._active_detectors):
+            try:
+                det.event_queue.put(np.zeros(512, dtype=np.float32))
+            except Exception:
+                pass
+
     def run(self) -> None:
-        """Invokes backend functions while redirecting stdout."""
+        """Invokes backend functions while redirecting stdout and tracking active detectors."""
+        self.thread_ident = threading.get_ident()
         old_stdout = sys.stdout
         old_stderr = sys.stderr
 
-        redirector = StreamRedirector(self.log_message.emit)
-        sys.stdout = redirector
-        sys.stderr = redirector
+        self._redirector = StreamRedirector(self.log_message.emit)
+        sys.stdout = self._redirector
+        sys.stderr = self._redirector
+
+        # Hook ImpulseDetector to capture active queues for safe cancellation
+        from src.holo import detector as detector_mod
+        orig_detector_init = detector_mod.ImpulseDetector.__init__
+
+        def hooked_init(det_self, *args, **kwargs):
+            orig_detector_init(det_self, *args, **kwargs)
+            if threading.get_ident() == self.thread_ident:
+                self._active_detectors.append(det_self)
+
+        detector_mod.ImpulseDetector.__init__ = hooked_init
 
         success = True
         err_msg = ""
@@ -100,14 +151,26 @@ class CalibrationWorker(QObject):
             else:
                 raise ValueError(f"Unknown task type: {self.task_type}")
 
+        except KeyboardInterrupt:
+            success = False
+            err_msg = "Task cancelled by user"
+            if self._redirector is not None:
+                self.log_message.emit("\n[Task Interrupted by User]\n")
         except Exception as e:
             success = False
             err_msg = str(e)
-            self.log_message.emit(f"\n[Error] Task failed: {e}\n")
+            if self._redirector is not None:
+                self.log_message.emit(f"\n[Error] Task failed: {e}\n")
         finally:
+            detector_mod.ImpulseDetector.__init__ = orig_detector_init
             sys.stdout = old_stdout
             sys.stderr = old_stderr
-            self.task_finished.emit(success, err_msg)
+            if self._redirector is not None:
+                self._redirector.close()
+            try:
+                self.task_finished.emit(success, err_msg)
+            except Exception:
+                pass
 
 
 class CalibrationView(QWidget):
@@ -288,7 +351,7 @@ class CalibrationView(QWidget):
 
         btn_clear_console = QPushButton("Clear Console")
         btn_clear_console.setObjectName("secondaryButton")
-        btn_clear_console.clicked.connect(lambda: self.console.clear())
+        btn_clear_console.clicked.connect(self._clear_console)
 
         con_header.addWidget(lbl_console)
         con_header.addStretch()
@@ -335,39 +398,66 @@ class CalibrationView(QWidget):
 
         self.worker_thread.start()
 
+    def _clear_console(self) -> None:
+        try:
+            self.console.clear()
+        except Exception:
+            pass
+
     def _append_log(self, text: str) -> None:
-        self.console.insertPlainText(text)
-        # Auto-scroll to end
-        sb = self.console.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        try:
+            self.console.insertPlainText(text)
+            sb = self.console.verticalScrollBar()
+            if sb is not None:
+                sb.setValue(sb.maximum())
+        except Exception:
+            pass
 
     def _on_task_finished(self, success: bool, err_msg: str) -> None:
-        if success:
+        if self.worker is not None and self.worker._is_cancelled:
+            self.console.appendPlainText("\n>>> Task was cancelled by user.\n")
+        elif success:
             self.console.appendPlainText("\n>>> Task completed successfully.\n")
         else:
-            self.console.appendPlainText(f"\n>>> Task finished with error: {err_msg}\n")
+            self.console.appendPlainText(f"\n>>> Task finished: {err_msg}\n")
 
-        if self.worker_thread is not None:
-            self.worker_thread.quit()
-            self.worker_thread.wait(1000)
-            self.worker_thread = None
-            self.worker = None
-
-        self._set_buttons_enabled(True)
-        self.btn_stop_task.setEnabled(False)
+        self._cleanup_worker()
         self.refresh_dataset_counts()
 
     def _cancel_task(self) -> None:
-        if self.worker is not None:
-            self.worker.cancel()
-            self.console.appendPlainText("\n[Cancelling task...]\n")
+        if self.worker is None or self.worker_thread is None:
+            return
+
+        self.btn_stop_task.setEnabled(False)
+        self.btn_stop_task.setText("Cancelling...")
+        self.console.appendPlainText("\n[Cancelling task...]\n")
+
+        # 1. Signal cancellation to worker and unblock audio queues
+        self.worker.cancel()
+
+        # 2. Tell thread event loop to quit
+        self.worker_thread.quit()
+
+        # 3. Wait up to 3000 ms for thread to exit cleanly
+        if not self.worker_thread.wait(3000):
+            logger.warning("Worker thread did not stop in time; terminating.")
+            self.worker_thread.terminate()
+            self.worker_thread.wait(1000)
+
+        # 4. Only clean up worker after wait() returns!
+        self._cleanup_worker()
+
+    def _cleanup_worker(self) -> None:
         if self.worker_thread is not None:
-            self.worker_thread.quit()
-            self.worker_thread.wait(1500)
+            if self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                self.worker_thread.wait(1000)
             self.worker_thread = None
-            self.worker = None
+        self.worker = None
+
         self._set_buttons_enabled(True)
         self.btn_stop_task.setEnabled(False)
+        self.btn_stop_task.setText("Cancel Task")
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         self.btn_run_step1.setEnabled(enabled)

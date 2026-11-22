@@ -137,6 +137,8 @@ class MonitorView(QWidget):
         # Macro Trigger Checkbox
         self.macro_checkbox = QCheckBox("Trigger OS Macros (Cmd+C/V)")
         self.macro_checkbox.setToolTip("When checked, in-bounds gestures will execute system keyboard shortcuts.")
+        self.macro_checkbox.setFixedHeight(34)
+        self.macro_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.macro_checkbox.setChecked(False)
         dev_layout.addWidget(self.macro_checkbox, alignment=Qt.AlignmentFlag.AlignBottom)
 
