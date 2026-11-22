@@ -131,3 +131,9 @@ geofence:
   max_inside_distance: 5.80
   surface_tolerance_scale: 1.15
   class_conditional: true
+
+ui:
+  theme: "system"        # "dark", "light", or "system"
+  show_spectrogram: true
+  min_confidence: 0.65
+
