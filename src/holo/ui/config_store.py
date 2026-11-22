@@ -46,7 +46,7 @@ class UIConfigStore:
             cfg["theme"] = "system"
         cfg["show_spectrogram"] = bool(cfg.get("show_spectrogram", True))
         try:
-            cfg["min_confidence"] = float(cfg.get("min_confidence", 0.65))
+            cfg["min_confidence"] = float(cfg.get("min_confidence", 0.55))
             cfg["min_confidence"] = max(0.0, min(1.0, cfg["min_confidence"]))
         except (ValueError, TypeError):
             cfg["min_confidence"] = 0.65

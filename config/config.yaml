@@ -135,5 +135,4 @@ geofence:
 ui:
   theme: "system"        # "dark", "light", or "system"
   show_spectrogram: true
-  min_confidence: 0.65
-
+  min_confidence: 0.55

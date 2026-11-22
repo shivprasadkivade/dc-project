@@ -207,7 +207,7 @@ class SettingsView(QWidget):
         show_spec = bool(ui_cfg.get("show_spectrogram", True))
         self.spec_checkbox.setChecked(show_spec)
 
-        min_conf = float(ui_cfg.get("min_confidence", 0.65))
+        min_conf = float(ui_cfg.get("min_confidence", 0.55))
         self.conf_slider.setValue(int(min_conf * 100))
         self.conf_spin.setValue(min_conf)
         self.lbl_conf_pct.setText(f"{int(min_conf * 100)}%")

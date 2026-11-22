@@ -43,12 +43,13 @@ class MonitorView(QWidget):
 
     start_engine_requested = Signal(object, object, bool)  # (primary_dev, secondary_dev, enable_shortcuts)
     stop_engine_requested = Signal()
+    macro_toggled = Signal(bool)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._is_listening: bool = False
         self._show_spectrogram: bool = True
-        self._min_confidence: float = 0.65
+        self._min_confidence: float = 0.55
 
         self._init_ui()
         self.refresh_devices()
@@ -133,6 +134,7 @@ class MonitorView(QWidget):
         self.macro_checkbox.setFixedHeight(34)
         self.macro_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         self.macro_checkbox.setChecked(False)
+        self.macro_checkbox.toggled.connect(self.macro_toggled)
         dev_layout.addWidget(self.macro_checkbox, alignment=Qt.AlignmentFlag.AlignBottom)
 
         dev_layout.addStretch()
@@ -248,7 +250,7 @@ class MonitorView(QWidget):
         """Applies UI configuration settings."""
         ui_cfg = config_store.get_ui_config()
         self._show_spectrogram = bool(ui_cfg.get("show_spectrogram", True))
-        self._min_confidence = float(ui_cfg.get("min_confidence", 0.65))
+        self._min_confidence = float(ui_cfg.get("min_confidence", 0.55))
         self.preview_card.setVisible(self._show_spectrogram)
 
     def refresh_devices(self, force_rescan: bool = False) -> None:

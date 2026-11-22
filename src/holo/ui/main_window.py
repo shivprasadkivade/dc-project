@@ -153,6 +153,7 @@ class MainWindow(QMainWindow):
         # Connect Monitor View controls to Engine Bridge
         self.monitor_view.start_engine_requested.connect(self.engine_bridge.start_engine)
         self.monitor_view.stop_engine_requested.connect(self.engine_bridge.stop_engine)
+        self.monitor_view.macro_toggled.connect(self.engine_bridge.set_enable_shortcuts)
 
         # Forward Engine Bridge signals to Views
         self.engine_bridge.engine_state_changed.connect(self._on_engine_state_changed)
