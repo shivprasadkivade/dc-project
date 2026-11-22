@@ -17,22 +17,12 @@ import joblib
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot, QTimer
 
-# Import audio hardware helpers cleanly
-# If src/holo/audio_manager.py is not present yet, audio_adapter provides safe fallback
-try:
-    from src.holo.audio_manager import (
-        list_audio_devices,
-        find_builtin_microphone,
-        find_secondary_microphone,
-        SplitAudioEngine,
-    )
-except ImportError:
-    from src.holo.ui.audio_adapter import (  # type: ignore # noqa: F401
-        list_audio_devices,
-        find_builtin_microphone,
-        find_secondary_microphone,
-        SplitAudioEngine,
-    )
+from src.holo.ui.audio_adapter import (
+    list_audio_devices,
+    find_builtin_microphone,
+    find_secondary_microphone,
+    SplitAudioEngine,
+)
 
 from src.holo.config import CFG, MODEL_PATH
 from src.holo.features import extract_features

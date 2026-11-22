@@ -28,18 +28,11 @@ from PySide6.QtWidgets import (
 )
 import pyqtgraph as pg
 
-try:
-    from src.holo.audio_manager import (
-        list_audio_devices,
-        find_builtin_microphone,
-        find_secondary_microphone,
-    )
-except ImportError:
-    from src.holo.ui.audio_adapter import (  # type: ignore # noqa: F401
-        list_audio_devices,
-        find_builtin_microphone,
-        find_secondary_microphone,
-    )
+from src.holo.ui.audio_adapter import (
+    list_audio_devices,
+    find_builtin_microphone,
+    find_secondary_microphone,
+)
 
 from src.holo.ui.theme import theme_manager, ThemeColors
 from src.holo.ui.config_store import config_store

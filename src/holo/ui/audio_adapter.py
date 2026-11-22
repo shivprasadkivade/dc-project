@@ -20,6 +20,7 @@ except ImportError:
 
 from src.holo.config import SAMPLE_RATE, BLOCK_SIZE
 from src.holo.detector import ImpulseDetector, get_input_channels
+from src.holo.audio_manager import is_external_or_bluetooth_name
 
 logger = logging.getLogger(__name__)
 
@@ -81,21 +82,24 @@ def list_audio_devices(force_rescan: bool = False) -> List[Dict[str, Any]]:
             if clean_name.startswith("PC Speaker") or clean_name.startswith("Stereo Mix"):
                 continue
 
-            # 4. Verify that the device is actively connected by testing stream access
+            # 4. Verify stream access for non-Bluetooth devices
+            # Never open an InputStream on Bluetooth devices during enumeration,
+            # as that triggers macOS CoreAudio into low-quality HFP/SCO mode.
             sr = int(dev.get("default_samplerate", 44100))
-            try:
-                test_stream = sd.InputStream(
-                    device=idx,
-                    samplerate=sr,
-                    channels=min(max_in, 1),
-                    callback=lambda *a: None,
-                )
-                test_stream.start()
-                test_stream.stop()
-                test_stream.close()
-            except Exception:
-                # Device is disconnected (e.g. disconnected bluetooth, unplugged USB, or blocked)
-                continue
+            if not is_external_or_bluetooth_name(clean_name):
+                try:
+                    test_stream = sd.InputStream(
+                        device=idx,
+                        samplerate=sr,
+                        channels=min(max_in, 1),
+                        callback=lambda *a: None,
+                    )
+                    test_stream.start()
+                    test_stream.stop()
+                    test_stream.close()
+                except Exception:
+                    # Device is disconnected (unplugged USB or blocked)
+                    continue
 
             # 5. Deduplicate base device names across Host APIs (e.g. MME vs WASAPI)
             base_key = clean_lower.split("(")[0].strip() if "(" in clean_lower else clean_lower
@@ -294,11 +298,3 @@ class SplitAudioEngine:
             finally:
                 self._stream = None
         logger.info("SplitAudioEngine stopped.")
-
-
-# Ensure src.holo.audio_manager resolves to this adapter if not present
-if "src.holo.audio_manager" not in sys.modules:
-    try:
-        import src.holo.audio_manager  # type: ignore # noqa: F401
-    except ImportError:
-        sys.modules["src.holo.audio_manager"] = sys.modules[__name__]
