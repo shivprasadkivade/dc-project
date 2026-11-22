@@ -47,6 +47,14 @@ POST_BLOCKS = int(AUDIO_CFG.get("post_blocks", 8))
 COOLDOWN_BLOCKS = int(AUDIO_CFG.get("cooldown_blocks", 25))
 CHANNELS = int(AUDIO_CFG.get("channels", 1))
 
+# Hardware Isolation Constants
+TAP_DEVICE = AUDIO_CFG.get("tap_device", "builtin")
+OUTPUT_DEVICE = AUDIO_CFG.get("output_device", "builtin")
+SECONDARY_DEVICE = AUDIO_CFG.get("secondary_device", "auto")
+SPLIT_INPUT = bool(AUDIO_CFG.get("split_input", False))
+CAPTURE_SECONDARY = bool(AUDIO_CFG.get("capture_secondary", False))
+AUTO_RECONNECT = bool(AUDIO_CFG.get("auto_reconnect", True))
+
 # Detector Constants
 DET_CFG = CFG.get("detector", {})
 RMS_THRESHOLD = float(DET_CFG.get("rms_threshold", 0.02))

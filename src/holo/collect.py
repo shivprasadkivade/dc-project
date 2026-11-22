@@ -13,6 +13,7 @@ from .config import (
     CLASSES,
 )
 from .detector import ImpulseDetector, get_input_channels
+from .audio_manager import SplitAudioEngine
 
 def save_sample(save_dir: Path, label: str, waveform: np.ndarray) -> Path:
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -33,9 +34,7 @@ def collect_single_class(label: str, num_samples: int, threshold: float):
 
     count = 0
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=get_input_channels(), callback=detector.audio_callback
-        ):
+        with SplitAudioEngine(tap_callback=detector.audio_callback, channels=get_input_channels()) as engine:
             while count < num_samples:
                 waveform = detector.event_queue.get()
                 saved_file = save_sample(save_dir, label, waveform)
@@ -62,9 +61,7 @@ def collect_group_interleaved(samples_per_class: int, threshold: float):
     print(f"{'='*65}\n")
 
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=get_input_channels(), callback=detector.audio_callback
-        ):
+        with SplitAudioEngine(tap_callback=detector.audio_callback, channels=get_input_channels()) as engine:
             while any(v > 0 for v in remaining.values()):
                 active_classes = [c for c, rem in remaining.items() if rem > 0]
                 current_class = random.choice(active_classes)
@@ -126,9 +123,7 @@ def collect_boundary_zone(zone: str, num_samples: int, threshold: float = RMS_TH
 
     count = 0
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=get_input_channels(), callback=detector.audio_callback
-        ):
+        with SplitAudioEngine(tap_callback=detector.audio_callback, channels=get_input_channels()) as engine:
             while count < num_samples:
                 waveform = detector.event_queue.get()
                 saved_file = save_sample(save_dir, prefix, waveform)
@@ -181,9 +176,7 @@ def calibrate_geofence_session(threshold: float = RMS_THRESHOLD):
     print("=" * 70)
 
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=get_input_channels(), callback=detector.audio_callback
-        ):
+        with SplitAudioEngine(tap_callback=detector.audio_callback, channels=get_input_channels()) as engine:
             for save_dir, prefix, count_target, instructions in phases:
                 print(f"\n>>> {instructions}")
                 print(f"Target: {count_target} taps | Saving to: {save_dir.relative_to(DATA_DIR.parent)} | Waiting for strikes...\n")

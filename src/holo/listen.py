@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import queue
 import platform
 import argparse
 from pathlib import Path
@@ -9,10 +10,22 @@ import numpy as np
 import sounddevice as sd
 import joblib
 from pynput import keyboard
-from .config import CFG, SAMPLE_RATE, BLOCK_SIZE, RMS_THRESHOLD, MODEL_PATH
+from .config import (
+    CFG,
+    SAMPLE_RATE,
+    BLOCK_SIZE,
+    RMS_THRESHOLD,
+    MODEL_PATH,
+    SPLIT_INPUT,
+    TAP_DEVICE,
+    SECONDARY_DEVICE,
+    CAPTURE_SECONDARY,
+    AUTO_RECONNECT,
+)
 from .detector import ImpulseDetector, get_input_channels
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector
+from .audio_manager import SplitAudioEngine, print_audio_devices
 
 def run_listener(
     model_file: Path = MODEL_PATH,
@@ -20,6 +33,10 @@ def run_listener(
     confidence_min: Optional[float] = None,
     dry_run: bool = False,
     no_geofence: bool = False,
+    tap_device: Optional[str | int] = None,
+    secondary_device: Optional[str | int] = None,
+    no_split: bool = False,
+    no_secondary_capture: bool = False,
 ):
     if not model_file.exists():
         raise FileNotFoundError(f"Model file not found at {model_file}. Run 'uv run python -m src.holo.train' first.")
@@ -104,11 +121,38 @@ def run_listener(
     print("Tap left or right palm rest. Knock desk to test boundary rejection.")
     print("Press Ctrl+C to stop.\n" + "=" * 70 + "\n")
 
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
-    ):
+    effective_tap_dev = tap_device if tap_device is not None else TAP_DEVICE
+    effective_sec_dev = secondary_device if secondary_device is not None else SECONDARY_DEVICE
+    capture_sec = (not no_secondary_capture) and CAPTURE_SECONDARY
+
+    if not no_split:
+        audio_ctx = SplitAudioEngine(
+            tap_callback=detector.audio_callback,
+            tap_device_pref=effective_tap_dev,
+            secondary_device_pref=effective_sec_dev,
+            capture_secondary=capture_sec,
+            auto_reconnect=AUTO_RECONNECT,
+            sample_rate=SAMPLE_RATE,
+            block_size=BLOCK_SIZE,
+            channels=channels,
+        )
+    else:
+        # Legacy fallback mode
+        audio_ctx = sd.InputStream(
+            samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
+        )
+
+    with audio_ctx:
+        if hasattr(audio_ctx, "print_summary"):
+            audio_ctx.print_summary()
+
         while True:
-            waveform = detector.event_queue.get()
+            try:
+                waveform = detector.event_queue.get(timeout=1.0)
+            except queue.Empty:
+                if hasattr(audio_ctx, "ensure_active"):
+                    audio_ctx.ensure_active()
+                continue
 
             # Active keyboard typing suppression
             if (time.time() - last_keypress_time) < typing_suppression_window:
@@ -166,21 +210,40 @@ def run_listener(
             if geofence is not None and not no_geofence:
                 if gf_decision.prob_inside < (geofence.boundary_threshold + 0.12):
                     req_conf = min(0.92, req_conf + 0.10)
+
             print(f"  {gf_tag} Pred: {pred_label:10s} | Conf: {confidence:.2f} (Req: {req_conf:.2f}) [{breakdown}] | {latency_ms:.1f} ms")
 
             if pred_label != "noise" and confidence >= req_conf:
                 trigger_macro(pred_label)
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Test or run trained AcousticTap with Geofencing")
+    parser = argparse.ArgumentParser(description="Test or run trained AcousticTap with Split-Input Audio & Geofencing")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to a .joblib model file")
     parser.add_argument("--threshold", type=float, default=RMS_THRESHOLD, help="Mic RMS trigger threshold")
     parser.add_argument("--confidence", type=float, default=0.65, help="Minimum confidence to trigger")
     parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing shortcuts")
     parser.add_argument("--no-geofence", action="store_true", help="Disable passive acoustic geofence spatial verification")
+    parser.add_argument("--tap-device", type=str, default=None, help="Device name or index for Point 1 (MacBook mic)")
+    parser.add_argument("--secondary-device", type=str, default=None, help="Device name or index for Point 2 (Earphones/Headset)")
+    parser.add_argument("--no-secondary-capture", action="store_true", help="Do not capture secondary mic (leave earphones purely for system/music)")
+    parser.add_argument("--no-split", action="store_true", help="Disable audio splitting and use default system input")
+    parser.add_argument("--list-devices", action="store_true", help="List all audio devices with split input roles and exit")
     return parser
 
 if __name__ == "__main__":
     parser = build_parser()
     args = parser.parse_args()
-    run_listener(args.model, args.threshold, args.confidence, args.dry_run, args.no_geofence)
+    if args.list_devices:
+        print_audio_devices()
+    else:
+        run_listener(
+            model_file=args.model,
+            threshold=args.threshold,
+            confidence_min=args.confidence,
+            dry_run=args.dry_run,
+            no_geofence=args.no_geofence,
+            tap_device=args.tap_device,
+            secondary_device=args.secondary_device,
+            no_split=args.no_split,
+            no_secondary_capture=args.no_secondary_capture,
+        )

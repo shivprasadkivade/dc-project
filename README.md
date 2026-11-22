@@ -385,6 +385,18 @@ uv run python -m src.holo.listen
 
 *(Optional parameters: `--threshold 0.02` to adjust mic sensitivity, `--confidence 0.65` to adjust trigger bar).*
 
+#### Split-Input Dual Audio Architecture & Bluetooth Earphones
+AcousticTap isolates the MacBook Internal Microphone (**Point 1**) for chassis palm rest tap detection, while simultaneously supporting Bluetooth earphones, AirPods, or headphones (**Point 2**) in parallel without audio device lockouts or Bluetooth profile degradation:
+- **List All Detected Audio Devices & Split Roles:**
+  ```bash
+  uv run python -m src.holo.listen --list-devices
+  ```
+- **Custom Device Targets:**
+  ```bash
+  uv run python -m src.holo.listen --tap-device "MacBook Air Microphone" --secondary-device "AirPods Pro"
+  ```
+- **Background Auto-Reconnection & Hotplugging:** Bluetooth earphones can connect or disconnect freely while AcousticTap is running without terminating or interrupting tap detection.
+
 ---
 
 ### 7.2 Boundary Calibration & Training

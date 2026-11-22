@@ -11,6 +11,16 @@ audio:
   post_blocks: 8                # Blocks captured AFTER impact spike
   cooldown_blocks: 25           # Cooldown blocks (~290 ms) to prevent double triggers
   channels: 1                   # Default 1 (mono) for Mac and single-channel hardware; set 2 for stereo
+  # -------------------------------------------------------------------
+  # Hardware Isolation & Device Configuration
+  # Dedicated to MacBook internal microphone to avoid Bluetooth SCO degradation
+  # -------------------------------------------------------------------
+  split_input: false            # Disabled so external/Bluetooth microphones are strictly ignored
+  tap_device: "builtin"         # Point 1: Dedicated MacBook internal mic for taps ("builtin" / "auto" / index / name)
+  output_device: "builtin"      # Dedicated MacBook internal speakers if output is used ("builtin" / index / name)
+  secondary_device: "auto"      # Point 2: Secondary device reference
+  capture_secondary: false      # NEVER open Bluetooth/headset mic (keeps headphone audio in pristine stereo)
+  auto_reconnect: true          # Passive recovery: re-resolve built-in mic if CoreAudio reindexes on BT events
 
 detector:
   rms_threshold: 0.02          # Base microphone RMS trigger threshold
