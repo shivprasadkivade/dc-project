@@ -177,6 +177,10 @@ def synthesize_chassis_impulse(
 def check_macos_mic_permission() -> bool:
     """Tests if audio input is accessible and not silenced by macOS privacy restrictions."""
     try:
+        from src.holo.audio_manager import find_builtin_microphone
+        builtin = find_builtin_microphone()
+        if builtin and builtin.max_input_channels > 0:
+            return True
         import sounddevice as sd
         devices = sd.query_devices()
         input_dev = sd.query_devices(kind="input")
@@ -191,6 +195,7 @@ def record_live_transient(prompt_label: str, timeout_seconds: float = 6.0) -> Op
     """Interactively captures a single tap transient using sounddevice."""
     try:
         import sounddevice as sd
+        from src.holo.audio_manager import SplitAudioEngine
     except ImportError:
         return None
 
@@ -212,12 +217,12 @@ def record_live_transient(prompt_label: str, timeout_seconds: float = 6.0) -> Op
         detector.audio_callback(indata, frames, time_info, status)
 
     try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=BLOCK_SIZE,
+        with SplitAudioEngine(
+            tap_callback=callback,
             channels=channels,
-            callback=callback
-        ):
+            sample_rate=SAMPLE_RATE,
+            block_size=BLOCK_SIZE,
+        ) as engine:
             while time.time() - start_time < timeout_seconds:
                 try:
                     captured = detector.event_queue.get(timeout=0.2)

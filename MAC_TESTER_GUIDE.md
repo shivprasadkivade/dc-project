@@ -30,7 +30,7 @@ uv sync
 
 ---
 
-## 2. Important: macOS Microphone Permission
+## 2. Important: macOS Microphone Permission & Earphone Support
 
 macOS requires you to grant microphone permission to your terminal app.
 
@@ -41,7 +41,15 @@ macOS requires you to grant microphone permission to your terminal app.
 2. If you do not see a prompt or audio is silent:
    - Open **System Settings** -> **Privacy & Security** -> **Microphone**.
    - Make sure **Terminal** (or **iTerm** / **VS Code**) is toggled **ON**.
-   - Also verify in **System Settings** -> **Sound** -> **Input** that your **MacBook Internal Microphone** is selected.
+
+3. **Split-Input Audio & Bluetooth Earphones / Headphones:**
+   AcousticTap features a split-input architecture that isolates the **MacBook Internal Microphone** for chassis tap sensing (Point 1).
+   - You can connect and use your **Bluetooth earphones, AirPods, or headphones** at any time while AcousticTap is running.
+   - Both points operate concurrently without conflict: chassis palm rest taps are captured through the MacBook mic, while your earphones/headphones remain available for audio, calls, and parallel input.
+   - To inspect your audio devices and their assigned roles at any time, run:
+     ```bash
+     uv run python -m src.holo.listen --list-devices
+     ```
 
 ---
 

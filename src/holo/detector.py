@@ -5,14 +5,23 @@ import numpy as np
 import sounddevice as sd
 from .config import CFG
 
-def get_input_channels() -> int:
+def get_input_channels(device_index: int | None = None) -> int:
     ch_cfg = CFG.get("audio", {}).get("channels", 1)
     if ch_cfg != "auto":
         return int(ch_cfg)
     try:
-        dev = sd.query_devices(kind="input")
-        if isinstance(dev, dict):
-            return min(2, max(1, int(dev.get("max_input_channels", 1))))
+        if device_index is not None:
+            dev = sd.query_devices(device_index)
+            if isinstance(dev, dict):
+                return min(2, max(1, int(dev.get("max_input_channels", 1))))
+        else:
+            from .audio_manager import find_builtin_microphone
+            builtin = find_builtin_microphone()
+            if builtin is not None:
+                return min(2, max(1, builtin.max_input_channels))
+            dev = sd.query_devices(kind="input")
+            if isinstance(dev, dict):
+                return min(2, max(1, int(dev.get("max_input_channels", 1))))
     except Exception:
         pass
     return 1

@@ -11,11 +11,21 @@ audio:
   post_blocks: 8                # Blocks captured AFTER impact spike
   cooldown_blocks: 25           # Cooldown blocks (~290 ms) to prevent double triggers
   channels: 1                   # Default 1 (mono) for Mac and single-channel hardware; set 2 for stereo
+  # -------------------------------------------------------------------
+  # Hardware Isolation & Device Configuration
+  # Dedicated to MacBook internal microphone to avoid Bluetooth SCO degradation
+  # -------------------------------------------------------------------
+  split_input: false            # Disabled so external/Bluetooth microphones are strictly ignored
+  tap_device: "builtin"         # Point 1: Dedicated MacBook internal mic for taps ("builtin" / "auto" / index / name)
+  output_device: "builtin"      # Dedicated MacBook internal speakers if output is used ("builtin" / index / name)
+  secondary_device: "auto"      # Point 2: Secondary device reference
+  capture_secondary: false      # NEVER open Bluetooth/headset mic (keeps headphone audio in pristine stereo)
+  auto_reconnect: true          # Passive recovery: re-resolve built-in mic if CoreAudio reindexes on BT events
 
 detector:
-  rms_threshold: 0.02          # Base microphone RMS trigger threshold
+  rms_threshold: 0.015          # Base microphone RMS trigger threshold (tuned for responsive palm rest taps)
   peak_multiplier: 1.8          # Peak amplitude must exceed rms_threshold * peak_multiplier
-  bg_snr_ratio: 2.3             # RMS must exceed rolling background floor * bg_snr_ratio
+  bg_snr_ratio: 2.2             # RMS must exceed rolling background floor * bg_snr_ratio
   bg_ema_alpha: 0.95            # Exponential moving average decay for background noise floor
 
 signal_window:
@@ -98,11 +108,12 @@ training:
       clf__class_weight: ["balanced", null]
 
 listener:
-  default_confidence: 0.65
-  # Per-class confidence thresholds (lower left_tap threshold slightly to boost recall)
+  default_confidence: 0.55
+  # Per-class confidence thresholds (tuned for responsive recognition)
   class_thresholds:
-    left_tap: 0.58
-    right_tap: 0.68
+    left_tap: 0.50
+    right_tap: 0.55
+  notifications: true           # Display native macOS toast notifications on Copy and Paste
   typing_suppression_seconds: 0.15
   os_modifier_key: "auto"       # "auto" picks "cmd" on macOS, "ctrl" on Windows/Linux; can override with "cmd" or "ctrl"
   shortcuts:
