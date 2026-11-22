@@ -24,10 +24,11 @@ from src.holo.detector import ImpulseDetector, get_input_channels
 logger = logging.getLogger(__name__)
 
 
-def list_audio_devices() -> List[Dict[str, Any]]:
-    """Enumerate all available audio input devices.
+def list_audio_devices(force_rescan: bool = False) -> List[Dict[str, Any]]:
+    """Enumerate actively connected audio input devices.
 
-    Returns a list of dicts with device index, name, channels, and default flag.
+    Filters out disconnected Bluetooth profiles, kernel driver registry paths,
+    virtual loopback mappers, and inactive endpoints.
     """
     devices: List[Dict[str, Any]] = []
     if sd is None:
@@ -41,27 +42,80 @@ def list_audio_devices() -> List[Dict[str, Any]]:
             }
         ]
 
+    if force_rescan:
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            logger.debug("PortAudio re-initialization error: %s", e)
+
+    seen_names = set()
+
     try:
         dev_list = sd.query_devices()
         default_in = None
         try:
-            default_in = sd.default.device[0]
+            default_in = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else None
         except Exception:
             pass
 
         for idx, dev in enumerate(dev_list):
             max_in = int(dev.get("max_input_channels", 0))
-            if max_in > 0:
-                is_def = (idx == default_in)
-                devices.append({
-                    "index": idx,
-                    "name": str(dev.get("name", f"Input Device {idx}")),
-                    "channels": max_in,
-                    "samplerate": float(dev.get("default_samplerate", 44100.0)),
-                    "is_default": is_def,
-                })
+            if max_in <= 0:
+                continue
+
+            raw_name = str(dev.get("name", ""))
+            # 1. Clean whitespace and remove newlines/tabs
+            clean_name = " ".join(raw_name.split())
+            if not clean_name:
+                continue
+
+            # 2. Exclude Windows driver paths / registry artifacts (e.g. @System32, bthhfenum.sys)
+            clean_lower = clean_name.lower()
+            if "@system32" in clean_lower or ".sys" in clean_lower or "@" in clean_name:
+                continue
+
+            # 3. Exclude Windows virtual loopback mappers and speaker inputs
+            if clean_name in ("Microsoft Sound Mapper - Input", "Primary Sound Capture Driver"):
+                continue
+            if clean_name.startswith("PC Speaker") or clean_name.startswith("Stereo Mix"):
+                continue
+
+            # 4. Verify that the device is actively connected by testing stream access
+            sr = int(dev.get("default_samplerate", 44100))
+            try:
+                test_stream = sd.InputStream(
+                    device=idx,
+                    samplerate=sr,
+                    channels=min(max_in, 1),
+                    callback=lambda *a: None,
+                )
+                test_stream.start()
+                test_stream.stop()
+                test_stream.close()
+            except Exception:
+                # Device is disconnected (e.g. disconnected bluetooth, unplugged USB, or blocked)
+                continue
+
+            # 5. Deduplicate base device names across Host APIs (e.g. MME vs WASAPI)
+            base_key = clean_lower.split("(")[0].strip() if "(" in clean_lower else clean_lower
+            if base_key in seen_names and (idx != default_in):
+                continue
+            seen_names.add(base_key)
+
+            is_def = (idx == default_in)
+            devices.append({
+                "index": idx,
+                "name": clean_name,
+                "channels": max_in,
+                "samplerate": float(sr),
+                "is_default": is_def,
+            })
+
     except Exception as e:
         logger.warning("Failed to query audio devices: %s", e)
+
+    if not devices:
         devices.append({
             "index": 0,
             "name": "Default Built-in Microphone",

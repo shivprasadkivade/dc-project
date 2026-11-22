@@ -177,7 +177,7 @@ def generate_qss(is_dark: bool) -> str:
     }}
 
     /* Inputs, ComboBox, SpinBox */
-    QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
+    QSpinBox, QDoubleSpinBox, QLineEdit {{
         background-color: {card};
         border: 1px solid {border};
         border-radius: 6px;
@@ -186,15 +186,43 @@ def generate_qss(is_dark: bool) -> str:
         selection-background-color: {accent};
     }}
 
+    QComboBox {{
+        background-color: {card};
+        border: 1px solid {border};
+        border-radius: 6px;
+        padding-left: 12px;
+        padding-right: 28px;
+        padding-top: 0px;
+        padding-bottom: 0px;
+        min-height: 32px;
+        max-height: 34px;
+        color: {txt};
+        selection-background-color: {accent};
+    }}
+
     QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{
+        border: 1px solid {accent};
+    }}
+
+    QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
         border: 1px solid {accent};
     }}
 
     QComboBox::drop-down {{
         subcontrol-origin: padding;
         subcontrol-position: top right;
-        width: 20px;
+        width: 24px;
         border-left: none;
+    }}
+
+    QComboBox::down-arrow {{
+        image: none;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid {sec_txt};
+        width: 0px;
+        height: 0px;
+        margin-right: 10px;
     }}
 
     QComboBox QAbstractItemView {{
@@ -204,6 +232,11 @@ def generate_qss(is_dark: bool) -> str:
         selection-color: #FFFFFF;
         border-radius: 6px;
         padding: 4px;
+    }}
+
+    QComboBox QAbstractItemView::item {{
+        min-height: 28px;
+        padding-left: 8px;
     }}
 
     /* Tables */

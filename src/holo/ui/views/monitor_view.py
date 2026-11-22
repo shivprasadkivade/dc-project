@@ -10,8 +10,9 @@ import time
 from typing import Optional, Dict, Any, List
 import numpy as np
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -107,7 +108,8 @@ class MonitorView(QWidget):
         lbl_primary = QLabel("Primary Built-in Microphone:")
         lbl_primary.setObjectName("subTitle")
         self.primary_combo = QComboBox()
-        self.primary_combo.setMinimumWidth(240)
+        self.primary_combo.setMinimumWidth(260)
+        self.primary_combo.setFixedHeight(34)
         primary_box.addWidget(lbl_primary)
         primary_box.addWidget(self.primary_combo)
         dev_layout.addLayout(primary_box)
@@ -118,7 +120,8 @@ class MonitorView(QWidget):
         lbl_secondary = QLabel("Secondary External Microphone (Optional):")
         lbl_secondary.setObjectName("subTitle")
         self.secondary_combo = QComboBox()
-        self.secondary_combo.setMinimumWidth(240)
+        self.secondary_combo.setMinimumWidth(260)
+        self.secondary_combo.setFixedHeight(34)
         secondary_box.addWidget(lbl_secondary)
         secondary_box.addWidget(self.secondary_combo)
         dev_layout.addLayout(secondary_box)
@@ -126,8 +129,9 @@ class MonitorView(QWidget):
         # Refresh Devices Button
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setObjectName("secondaryButton")
+        self.refresh_btn.setFixedHeight(34)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self.refresh_devices)
+        self.refresh_btn.clicked.connect(lambda: self.refresh_devices(force_rescan=True))
         dev_layout.addWidget(self.refresh_btn, alignment=Qt.AlignmentFlag.AlignBottom)
 
         # Macro Trigger Checkbox
@@ -252,16 +256,28 @@ class MonitorView(QWidget):
         self._min_confidence = float(ui_cfg.get("min_confidence", 0.65))
         self.preview_card.setVisible(self._show_spectrogram)
 
-    def refresh_devices(self) -> None:
+    def refresh_devices(self, force_rescan: bool = False) -> None:
         """Discovers input audio devices and populates dropdowns."""
-        devices = list_audio_devices()
+        if force_rescan:
+            self.refresh_btn.setEnabled(False)
+            self.refresh_btn.setText("Scanning...")
+            QApplication.processEvents()
+
+        prev_primary = self.primary_combo.currentData()
+        prev_secondary = self.secondary_combo.currentData()
+
+        devices = list_audio_devices(force_rescan=force_rescan)
         builtin_idx = find_builtin_microphone(devices)
         secondary_idx = find_secondary_microphone(devices)
+
+        self.primary_combo.blockSignals(True)
+        self.secondary_combo.blockSignals(True)
 
         self.primary_combo.clear()
         self.secondary_combo.clear()
 
         self.secondary_combo.addItem("None (Single-Mic Mono)", None)
+        self.secondary_combo.setItemData(0, Qt.AlignmentFlag.AlignVCenter, Qt.ItemDataRole.TextAlignmentRole)
 
         selected_primary_row = 0
         selected_sec_row = 0
@@ -269,18 +285,34 @@ class MonitorView(QWidget):
         for row, dev in enumerate(devices):
             label = f"[{dev['index']}] {dev['name']} ({dev['channels']} ch)"
             self.primary_combo.addItem(label, dev["index"])
-            if dev["index"] == builtin_idx:
+            self.primary_combo.setItemData(row, Qt.AlignmentFlag.AlignVCenter, Qt.ItemDataRole.TextAlignmentRole)
+
+            if prev_primary is not None and dev["index"] == prev_primary:
+                selected_primary_row = row
+            elif prev_primary is None and dev["index"] == builtin_idx:
                 selected_primary_row = row
 
             sec_row = row + 1  # Offset by 1 due to "None"
             self.secondary_combo.addItem(label, dev["index"])
-            if secondary_idx is not None and dev["index"] == secondary_idx:
+            self.secondary_combo.setItemData(sec_row, Qt.AlignmentFlag.AlignVCenter, Qt.ItemDataRole.TextAlignmentRole)
+
+            if prev_secondary is not None and dev["index"] == prev_secondary:
+                selected_sec_row = sec_row
+            elif prev_secondary is None and secondary_idx is not None and dev["index"] == secondary_idx:
                 selected_sec_row = sec_row
 
         if self.primary_combo.count() > 0:
             self.primary_combo.setCurrentIndex(selected_primary_row)
         if self.secondary_combo.count() > 0:
             self.secondary_combo.setCurrentIndex(selected_sec_row)
+
+        self.primary_combo.blockSignals(False)
+        self.secondary_combo.blockSignals(False)
+
+        if force_rescan:
+            self.refresh_btn.setEnabled(True)
+            self.refresh_btn.setText("Refreshed ✓")
+            QTimer.singleShot(1200, lambda: self.refresh_btn.setText("Refresh"))
 
     def _on_toggle_clicked(self) -> None:
         """Handles Start/Stop listener click."""
