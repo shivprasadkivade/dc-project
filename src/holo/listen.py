@@ -4,11 +4,12 @@ import os
 import sys
 import time
 import queue
+import threading
 import platform
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, Callable
 import numpy as np
 import sounddevice as sd
 import joblib
@@ -236,6 +237,58 @@ def emit_shortcut(
                 pass
 
 
+class ShortcutDispatcher:
+    """
+    Non-blocking background daemon worker thread.
+    Consumes queued shortcut events and dispatches Quartz HID keystroke sequences
+    without stalling the audio processing or state machine event loop.
+    """
+    def __init__(self, core: AcousticTapCore, dry_run: bool = False):
+        self.core = core
+        self.dry_run = dry_run
+        self.queue: queue.Queue = queue.Queue()
+        self.running = True
+        self.worker = threading.Thread(target=self._run, daemon=True, name="AcousticTap-HID-Worker")
+        self.worker.start()
+
+    def dispatch(self, ev: Dict[str, Any]):
+        self.queue.put(ev)
+
+    def _run(self):
+        while self.running:
+            try:
+                ev = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                ev_label = ev.get("label", "")
+                ev_conf = float(ev.get("confidence", 0.0))
+                ev_lat = float(ev.get("latency_ms", 0.0))
+                ev_dt = float(ev.get("inter_tap_ms", 0.0))
+                dispatched, act_msg = emit_shortcut(
+                    action_label=ev_label,
+                    conf_pct=ev_conf * 100.0,
+                    latency_ms=ev_lat,
+                    dry_run=self.dry_run,
+                    enable_notifications=self.core.enable_notifications,
+                    mod_name=self.core.mod_name,
+                    kb_controller=self.core.kb_controller,
+                    on_synthetic_change=self.core._set_synthetic,
+                    inter_tap_ms=ev_dt,
+                )
+                if self.dry_run:
+                    print(f"  {act_msg}")
+                elif act_msg:
+                    print(f"  >>> {act_msg}")
+            except Exception:
+                pass
+            finally:
+                self.queue.task_done()
+
+    def stop(self):
+        self.running = False
+
+
 class AcousticTapCore:
     """Core gesture recognition and geofence verification engine.
     Shared across both CLI (listen.py) and Desktop UI (engine_bridge.py)."""
@@ -270,6 +323,7 @@ class AcousticTapCore:
         self.kb_controller = keyboard.Controller()
         self.last_keypress_time = 0.0
         self.is_emitting_synthetic = False
+        self.last_synthetic_emit_ts = 0.0
 
         if autoload:
             self.load_model()
@@ -277,6 +331,7 @@ class AcousticTapCore:
 
     def _set_synthetic(self, val: bool) -> None:
         self.is_emitting_synthetic = val
+        self.last_synthetic_emit_ts = time.time()
 
     def load_model(self, path: Optional[Path] = None) -> bool:
         target = Path(path) if path is not None else self.model_file
@@ -328,8 +383,11 @@ class AcousticTapCore:
 
         if can_monitor:
             def on_press(key):
-                if not self.is_emitting_synthetic:
-                    self.last_keypress_time = time.time()
+                now = time.time()
+                # Immunize against self-injected keystrokes from Quartz/pynput
+                if (now - self.last_synthetic_emit_ts) < 0.35 or self.is_emitting_synthetic:
+                    return
+                self.last_keypress_time = now
             try:
                 self.kb_listener = keyboard.Listener(on_press=on_press)
                 self.kb_listener.daemon = True
@@ -343,6 +401,8 @@ class AcousticTapCore:
         enable_shortcuts: bool = False,
         dry_run: bool = False,
         override_confidence: Optional[float] = None,
+        ringing_tolerant: bool = False,
+        tap2_boundary_threshold: float = 0.38,
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         now_ts = time.time()
@@ -359,6 +419,10 @@ class AcousticTapCore:
                 "geofence_passed": False,
                 "geofence_reason": "Typing suppression window active",
                 "latency_ms": (time.perf_counter() - t0) * 1000.0,
+                "feat_ms": 0.0,
+                "gf_ms": 0.0,
+                "inf_ms": 0.0,
+                "total_compute_ms": (time.perf_counter() - t0) * 1000.0,
                 "breakdown": "Ignored (Typing)",
                 "waveform": waveform,
                 "action_taken": False,
@@ -367,6 +431,7 @@ class AcousticTapCore:
         # If model not loaded, emit raw uncalibrated event
         if self.model is None:
             peak = float(np.max(np.abs(waveform))) if len(waveform) > 0 else 0.0
+            total_compute = (time.perf_counter() - t0) * 1000.0
             return {
                 "timestamp": now_ts,
                 "ignored_typing": False,
@@ -376,26 +441,38 @@ class AcousticTapCore:
                 "meets_min_confidence": True,
                 "geofence_passed": True,
                 "geofence_reason": "No model loaded (raw transient)",
-                "latency_ms": (time.perf_counter() - t0) * 1000.0,
+                "latency_ms": total_compute,
+                "feat_ms": 0.0,
+                "gf_ms": 0.0,
+                "inf_ms": 0.0,
+                "total_compute_ms": total_compute,
                 "breakdown": f"Raw Peak: {peak:.2f}",
                 "waveform": waveform,
                 "action_taken": False,
             }
 
+        t_feat0 = time.perf_counter()
         ml_1d = extract_features(waveform, feature_set=self.feature_set)
         fourier_1d = (
             extract_fourier_triangulation_vector(waveform)
             if self.triangulator is not None
             else np.zeros(43, dtype=np.float64)
         )
+        feat_ms = (time.perf_counter() - t_feat0) * 1000.0
 
         # 1. Geofence verification
+        t_gf0 = time.perf_counter()
         gf_passed = True
         gf_reason = "No geofence present"
         gf_prob_in = 1.0
         gf_details: Dict[str, Any] = {}
         if self.geofence is not None and not self.no_geofence:
-            gf_decision = self.geofence.verify(ml_1d, fourier_1d)
+            gf_decision = self.geofence.verify(
+                ml_1d,
+                fourier_1d,
+                ringing_tolerant=ringing_tolerant,
+                tap2_boundary_threshold=tap2_boundary_threshold,
+            )
             gf_passed = bool(getattr(gf_decision, "passed", True))
             gf_reason = str(getattr(gf_decision, "reason", ""))
             try:
@@ -412,8 +489,10 @@ class AcousticTapCore:
                 "reason": gf_reason,
                 "timestamp": now_ts,
             }
+        gf_ms = (time.perf_counter() - t_gf0) * 1000.0
 
         # 2. Hybrid classification
+        t_inf0 = time.perf_counter()
         ml_feats = ml_1d.reshape(1, -1)
         p_ml = self.model.predict_proba(ml_feats)[0]
 
@@ -428,10 +507,13 @@ class AcousticTapCore:
             probs = p_ml
             breakdown = "ML-Only"
 
+        inf_ms = (time.perf_counter() - t_inf0) * 1000.0
+        total_compute_ms = (time.perf_counter() - t0) * 1000.0
+
         pred_idx = int(np.argmax(probs))
         confidence = float(probs[pred_idx])
         pred_label = self.classes[pred_idx]
-        latency_ms = (time.perf_counter() - t0) * 1000.0
+        latency_ms = total_compute_ms
 
         # Required confidence calculation with geofence borderline boost
         def_conf = self.default_conf
@@ -486,6 +568,10 @@ class AcousticTapCore:
             "geofence_passed": gf_passed,
             "geofence_reason": gf_reason,
             "latency_ms": latency_ms,
+            "feat_ms": feat_ms,
+            "gf_ms": gf_ms,
+            "inf_ms": inf_ms,
+            "total_compute_ms": total_compute_ms,
             "breakdown": breakdown,
             "waveform": waveform,
             "action_taken": action_taken,
@@ -520,6 +606,9 @@ def run_listener(
         dt_model = MODEL_DIR / "acoustictap_doubletap_model.joblib"
         if dt_model.exists():
             model_file = dt_model
+            print(f"  [Model Selection] Auto-selected double-tap model: {dt_model.name}")
+        else:
+            print(f"  [Model Selection] Dedicated double-tap model ({dt_model.name}) not found. Gracefully falling back to base model ({MODEL_PATH.name}).")
 
     if not model_file.exists():
         raise FileNotFoundError(f"Model file not found at {model_file}. Run 'uv run python -m src.holo.train' first.")
@@ -599,37 +688,34 @@ def run_listener(
             print("-----------------------------------------------------------------")
         print("  Ready! Tap your palm rest... (Press Ctrl+C to stop)\n")
 
-        def _dispatch(ev: Dict[str, Any]):
-            ev_label = ev.get("label", "")
-            ev_conf = float(ev.get("confidence", 0.0))
-            ev_lat = float(ev.get("latency_ms", 0.0))
-            ev_dt = float(ev.get("inter_tap_ms", 0.0))
-
-            dispatched, act_msg = emit_shortcut(
-                action_label=ev_label,
-                conf_pct=ev_conf * 100.0,
-                latency_ms=ev_lat,
-                dry_run=dry_run,
-                enable_notifications=core.enable_notifications,
-                mod_name=core.mod_name,
-                kb_controller=core.kb_controller,
-                on_synthetic_change=core._set_synthetic,
-                inter_tap_ms=ev_dt,
-            )
-            if dry_run:
-                print(f"  {act_msg}")
-            elif act_msg:
-                print(f"  >>> {act_msg}")
+        dispatcher = ShortcutDispatcher(core=core, dry_run=dry_run)
 
         while True:
             ready_events = []
             try:
                 waveform = detector.event_queue.get(timeout=0.025)
+
+                # Check candidate Tap 2 timing window strictly clamped to [min_inter_tap_ms, max_inter_tap_ms]
+                now_ts = time.time()
+                delta_ms = (
+                    (now_ts - state_machine.pending_time) * 1000.0
+                    if (double_tap_active and state_machine is not None and state_machine.pending_tap is not None)
+                    else 0.0
+                )
+                is_candidate_tap2_window = bool(
+                    double_tap_active
+                    and state_machine is not None
+                    and state_machine.pending_tap is not None
+                    and (state_machine.min_inter_tap_ms <= delta_ms <= state_machine.max_inter_tap_ms)
+                )
+
                 res = core.evaluate_waveform(
                     waveform,
                     enable_shortcuts=False,
                     dry_run=dry_run,
                     override_confidence=confidence_min,
+                    ringing_tolerant=is_candidate_tap2_window,
+                    tap2_boundary_threshold=0.38,
                 )
 
                 if res.get("ignored_typing"):
@@ -637,31 +723,23 @@ def run_listener(
                         print("  -- [Typing] Ignored during active keyboard use")
                     continue
 
-                # Chassis ringing tolerance for second tap of a double tap
                 is_candidate_tap2 = False
-                now_ts = time.time()
-                if double_tap_active and state_machine is not None and state_machine.pending_tap is not None:
-                    delta_ms = (now_ts - state_machine.pending_time) * 1000.0
-                    if (state_machine.min_inter_tap_ms - 25.0) <= delta_ms <= (state_machine.max_inter_tap_ms + 40.0):
-                        cand_label = res.get("label", "unknown")
-                        cand_conf = float(res.get("confidence", 0.0))
-                        pending_label = state_machine.pending_tap.get("label", "")
-                        same_zone = (cand_label == pending_label) or ("left" in cand_label and "left" in pending_label) or ("right" in cand_label and "right" in pending_label)
-                        if (same_zone or not state_machine.require_same_zone) and cand_label in ("left_tap", "right_tap") and cand_conf >= 0.45:
-                            is_candidate_tap2 = True
+                if is_candidate_tap2_window:
+                    cand_label = res.get("label", "unknown")
+                    cand_conf = float(res.get("confidence", 0.0))
+                    pending_label = state_machine.pending_tap.get("label", "")
+                    same_zone = (cand_label == pending_label) or ("left" in cand_label and "left" in pending_label) or ("right" in cand_label and "right" in pending_label)
+                    # Candidate Tap 2 must match zone (if require_same_zone) and achieve confidence >= 0.60
+                    if (same_zone or not state_machine.require_same_zone) and cand_label in ("left_tap", "right_tap") and cand_conf >= 0.60:
+                        is_candidate_tap2 = True
 
+                # Enforce Geofence: NEVER bypass on Tap 2! Desk knocks must still be rejected.
                 if not res.get("geofence_passed"):
-                    if is_candidate_tap2:
-                        res["geofence_passed"] = True
-                        res["meets_min_confidence"] = True
-                        if verbose:
-                            print(f"     [Double-Tap Tap 2: Ringing tolerance applied | Gap: {delta_ms:.1f} ms]")
+                    if verbose:
+                        print(f"  -- [Desk Knock] Filtered ({res.get('geofence_reason')}) | {res.get('latency_ms'):.1f} ms")
                     else:
-                        if verbose:
-                            print(f"  -- [Desk Knock] Filtered ({res.get('geofence_reason')}) | {res.get('latency_ms'):.1f} ms")
-                        else:
-                            print("  -- [Desk Knock] Filtered (Outside Boundary)")
-                        continue
+                        print("  -- [Desk Knock] Filtered (Outside Boundary)")
+                    continue
 
                 pred_label = res.get("label", "unknown")
                 conf = float(res.get("confidence", 0.0))
@@ -673,13 +751,20 @@ def run_listener(
                         print(f"  -- [Noise] Clatter filtered (Conf: {conf*100:.0f}%) | {lat:.1f} ms")
                     continue
 
-                if not res.get("meets_min_confidence") and not is_candidate_tap2:
+                if not res.get("meets_min_confidence") and not (is_candidate_tap2 and conf >= 0.60):
                     if verbose:
                         print(f"  -- [Ignored] Low confidence: {pred_label} ({conf:.2f} < {req_c:.2f})")
                     continue
 
+                if is_candidate_tap2 and verbose:
+                    print(f"     [Double-Tap Tap 2: Ringing tolerance applied | Gap: {delta_ms:.1f} ms]")
+
                 if verbose:
-                    print(f"     [Breakdown: {res.get('breakdown')}]")
+                    feat_ms = res.get("feat_ms", 0.0)
+                    gf_ms = res.get("gf_ms", 0.0)
+                    inf_ms = res.get("inf_ms", 0.0)
+                    tot_ms = res.get("total_compute_ms", lat)
+                    print(f"     [Breakdown: {res.get('breakdown')} | Timing: feat={feat_ms:.1f}ms gf={gf_ms:.1f}ms inf={inf_ms:.1f}ms total={tot_ms:.1f}ms]")
 
                 if double_tap_active and state_machine is not None:
                     ready_events.extend(state_machine.process_tap(res))
@@ -695,7 +780,7 @@ def run_listener(
                 ready_events.extend(state_machine.check_timeout(time.time()))
 
             for ev in ready_events:
-                _dispatch(ev)
+                dispatcher.dispatch(ev)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AcousticTap - Palm Rest Gestures with Hardware Audio Isolation")

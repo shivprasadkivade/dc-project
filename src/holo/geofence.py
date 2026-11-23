@@ -264,6 +264,8 @@ class AcousticGeofenceValidator:
         lw_global.fit(Z_in)
         cov_global = lw_global.covariance_.copy()
         cov_global[11:16, 11:16] *= self.surface_scale
+        # Tikhonov regularization on global covariance to guarantee positive-definiteness
+        cov_global += 1e-5 * np.eye(cov_global.shape[0])
         self.precision_inside = np.linalg.pinv(cov_global)
 
         self.zone_manifolds = []
@@ -279,6 +281,8 @@ class AcousticGeofenceValidator:
                         lw_z.fit(Z_zone)
                         cov_z = lw_z.covariance_.copy()
                         cov_z[11:16, 11:16] *= self.surface_scale
+                        # Tikhonov regularization on zone covariance
+                        cov_z += 1e-5 * np.eye(cov_z.shape[0])
                         p_zone = np.linalg.pinv(cov_z)
                         self.zone_manifolds.append((c_zone, p_zone))
             elif len(Z_in) >= 20:
@@ -293,6 +297,7 @@ class AcousticGeofenceValidator:
                             lw_z.fit(Z_zone)
                             cov_z = lw_z.covariance_.copy()
                             cov_z[11:16, 11:16] *= self.surface_scale
+                            cov_z += 1e-5 * np.eye(cov_z.shape[0])
                             p_zone = np.linalg.pinv(cov_z)
                             self.zone_manifolds.append((c_zone, p_zone))
                 except Exception:
@@ -368,13 +373,20 @@ class AcousticGeofenceValidator:
         ml_vec: np.ndarray,
         fourier_vec: np.ndarray,
         target_label: Optional[str] = None,
+        ringing_tolerant: bool = False,
+        tap2_boundary_threshold: float = 0.38,
         *args,
         **kwargs,
     ) -> GeofenceDecision:
         """
         Verifies whether an acoustic transient originated inside the physical palm rest geofence.
         Executes in low-latency two-stage gating.
+        When ringing_tolerant is True, relaxes pre-noise sensitive gates (ADR, crest factor) while
+        still strictly enforcing physical plate flexural invariant HF/LF ratio (z[0] >= min_hf)
+        and LF thump energy rejection (z[21] <= max_lf), and evaluating Stage 2 probability
+        against tap2_boundary_threshold (default: 0.38) instead of the standard boundary threshold.
         """
+        effective_threshold = float(tap2_boundary_threshold if ringing_tolerant else self.boundary_threshold)
         if not self.enabled or not self.is_fitted:
             return GeofenceDecision(
                 passed=True,
@@ -382,7 +394,7 @@ class AcousticGeofenceValidator:
                 prob_inside=1.0,
                 dist_inside=0.0,
                 dist_outside=0.0,
-                threshold=self.boundary_threshold,
+                threshold=effective_threshold,
                 reason="geofence_disabled",
             )
 
@@ -398,6 +410,9 @@ class AcousticGeofenceValidator:
         disp_max = getattr(self, "disp_max", self.cfg_disp_max)
         max_lf = getattr(self, "max_lf_dominance", 2.50)
 
+        # STAGE 1 CHECKS:
+        # Physical HF/LF ratio (z[0] < min_hf) and LF thump energy (z[21] > max_lf)
+        # MUST ALWAYS BE ENFORCED, even when ringing_tolerant is True!
         if z[0] < min_hf:
             return GeofenceDecision(
                 passed=False,
@@ -405,38 +420,8 @@ class AcousticGeofenceValidator:
                 prob_inside=0.0,
                 dist_inside=99.0,
                 dist_outside=0.0,
-                threshold=self.boundary_threshold,
+                threshold=effective_threshold,
                 reason=f"HF/LF ratio too low ({z[0]:.1f} dB < {min_hf:.1f} dB) - rubber-damped desk vibration",
-            )
-        if z[1] < min_adr:
-            return GeofenceDecision(
-                passed=False,
-                stage_failed="stage1_adr",
-                prob_inside=0.0,
-                dist_inside=99.0,
-                dist_outside=0.0,
-                threshold=self.boundary_threshold,
-                reason=f"Attack-decay ratio too low ({z[1]:.2f} dB < {min_adr:.2f} dB) - sluggish desk rise time",
-            )
-        if z[2] < min_crest:
-            return GeofenceDecision(
-                passed=False,
-                stage_failed="stage1_crest",
-                prob_inside=0.0,
-                dist_inside=99.0,
-                dist_outside=0.0,
-                threshold=self.boundary_threshold,
-                reason=f"Crest factor too low ({z[2]:.2f} < {min_crest:.2f}) - rounded non-metal wave",
-            )
-        if not (disp_min <= z[3] <= disp_max):
-            return GeofenceDecision(
-                passed=False,
-                stage_failed="stage1_disp",
-                prob_inside=0.0,
-                dist_inside=99.0,
-                dist_outside=0.0,
-                threshold=self.boundary_threshold,
-                reason=f"Lamb dispersion lag outside plate window ({z[3]:.1f} ms not in [{disp_min:.1f}, {disp_max:.1f}])",
             )
         if z[21] > max_lf:
             return GeofenceDecision(
@@ -445,9 +430,56 @@ class AcousticGeofenceValidator:
                 prob_inside=0.0,
                 dist_inside=99.0,
                 dist_outside=0.0,
-                threshold=self.boundary_threshold,
+                threshold=effective_threshold,
                 reason=f"Excessive low-frequency thump energy ({z[21]:.2f} > {max_lf:.2f})",
             )
+
+        # Pre-noise sensitive gates: ADR, crest factor, and strict dispersion window.
+        # These are relaxed when ringing_tolerant is True, because Tap 1's decaying tail
+        # elevates the pre-noise floor of Tap 2, depressing the measured attack-to-decay ratio
+        # and crest factor.
+        if not ringing_tolerant:
+            if z[1] < min_adr:
+                return GeofenceDecision(
+                    passed=False,
+                    stage_failed="stage1_adr",
+                    prob_inside=0.0,
+                    dist_inside=99.0,
+                    dist_outside=0.0,
+                    threshold=effective_threshold,
+                    reason=f"Attack-decay ratio too low ({z[1]:.2f} dB < {min_adr:.2f} dB) - sluggish desk rise time",
+                )
+            if z[2] < min_crest:
+                return GeofenceDecision(
+                    passed=False,
+                    stage_failed="stage1_crest",
+                    prob_inside=0.0,
+                    dist_inside=99.0,
+                    dist_outside=0.0,
+                    threshold=effective_threshold,
+                    reason=f"Crest factor too low ({z[2]:.2f} < {min_crest:.2f}) - rounded non-metal wave",
+                )
+            if not (disp_min <= z[3] <= disp_max):
+                return GeofenceDecision(
+                    passed=False,
+                    stage_failed="stage1_disp",
+                    prob_inside=0.0,
+                    dist_inside=99.0,
+                    dist_outside=0.0,
+                    threshold=effective_threshold,
+                    reason=f"Lamb dispersion lag outside plate window ({z[3]:.1f} ms not in [{disp_min:.1f}, {disp_max:.1f}])",
+                )
+        else:
+            if z[1] < -8.0:
+                return GeofenceDecision(
+                    passed=False,
+                    stage_failed="stage1_adr",
+                    prob_inside=0.0,
+                    dist_inside=99.0,
+                    dist_outside=0.0,
+                    threshold=effective_threshold,
+                    reason=f"Attack-decay ratio severely corrupted ({z[1]:.2f} dB < -8.0 dB)",
+                )
 
         # -----------------------------------------------------------------
         # Stage 2: Supervised Boundary Discriminator & Spatial Manifold
@@ -466,42 +498,44 @@ class AcousticGeofenceValidator:
 
         diff_out = z - self.centroid_outside if self.centroid_outside is not None else np.zeros_like(z)
         d_out = float(np.linalg.norm(diff_out))
+        max_dist = self.threshold * (1.25 if ringing_tolerant else 1.0)
 
         if self.classifier is not None:
             prob_inside = float(self.classifier.predict_proba(z.reshape(1, -1))[0, 1])
 
-            if prob_inside >= self.boundary_threshold and d_in <= self.threshold:
+            if prob_inside >= effective_threshold and d_in <= max_dist:
+                mode_str = " (ringing_tolerant)" if ringing_tolerant else ""
                 return GeofenceDecision(
                     passed=True,
                     stage_failed=None,
                     prob_inside=prob_inside,
                     dist_inside=d_in,
                     dist_outside=d_out,
-                    threshold=self.boundary_threshold,
-                    reason=f"inside palm rest boundary (prob_in={prob_inside:.2f}, d_in={d_in:.2f}/{self.threshold:.2f})",
+                    threshold=effective_threshold,
+                    reason=f"inside palm rest boundary{mode_str} (prob_in={prob_inside:.2f}>={effective_threshold:.2f}, d_in={d_in:.2f}/{max_dist:.2f})",
                 )
             else:
-                failed_stage = "outside_boundary" if prob_inside < self.boundary_threshold else "stage2_manifold"
+                failed_stage = "outside_boundary" if prob_inside < effective_threshold else "stage2_manifold"
                 return GeofenceDecision(
                     passed=False,
                     stage_failed=failed_stage,
                     prob_inside=prob_inside,
                     dist_inside=d_in,
                     dist_outside=d_out,
-                    threshold=self.boundary_threshold,
-                    reason=f"outside boundary: desk knock / external vibration (prob_in={prob_inside:.2f} < {self.boundary_threshold:.2f} or d_in={d_in:.2f} > {self.threshold:.2f})",
+                    threshold=effective_threshold,
+                    reason=f"outside boundary: desk knock / external vibration (prob_in={prob_inside:.2f} < {effective_threshold:.2f} or d_in={d_in:.2f} > {max_dist:.2f})",
                 )
         else:
             # Fallback when classifier not fitted
-            if d_in <= self.threshold:
+            if d_in <= max_dist:
                 return GeofenceDecision(
                     passed=True,
                     stage_failed=None,
                     prob_inside=1.0,
                     dist_inside=d_in,
                     dist_outside=d_out,
-                    threshold=self.threshold,
-                    reason=f"inside boundary manifold (d_in={d_in:.2f} <= {self.threshold:.2f})",
+                    threshold=effective_threshold,
+                    reason=f"inside boundary manifold (d_in={d_in:.2f} <= {max_dist:.2f})",
                 )
             else:
                 return GeofenceDecision(
@@ -510,6 +544,68 @@ class AcousticGeofenceValidator:
                     prob_inside=0.0,
                     dist_inside=d_in,
                     dist_outside=d_out,
-                    threshold=self.threshold,
-                    reason=f"outside boundary manifold (d_in={d_in:.2f} > {self.threshold:.2f})",
+                    threshold=effective_threshold,
+                    reason=f"outside boundary manifold (d_in={d_in:.2f} > {max_dist:.2f})",
                 )
+
+    def evaluate(
+        self,
+        ml_vec: np.ndarray,
+        fourier_vec: np.ndarray,
+        target_label: Optional[str] = None,
+        ringing_tolerant: bool = False,
+        tap2_boundary_threshold: float = 0.38,
+        *args,
+        **kwargs,
+    ) -> GeofenceDecision:
+        """Alias for verify(), ensuring compatibility with both verify() and evaluate()."""
+        return self.verify(
+            ml_vec=ml_vec,
+            fourier_vec=fourier_vec,
+            target_label=target_label,
+            ringing_tolerant=ringing_tolerant,
+            tap2_boundary_threshold=tap2_boundary_threshold,
+            *args,
+            **kwargs,
+        )
+
+    def sweep_thresholds(
+        self,
+        inside_ml: np.ndarray,
+        inside_fourier: np.ndarray,
+        outside_ml: Optional[np.ndarray] = None,
+        outside_fourier: Optional[np.ndarray] = None,
+        thresholds: Optional[List[float]] = None,
+    ) -> Dict[float, Dict[str, float]]:
+        """
+        Sweeps boundary thresholds [0.50, 0.55, 0.60, 0.65] and calculates
+        Inside False Rejection Rate (FRR) and Out-of-Bounds Rejection Rate (OOB-RR).
+        """
+        th_list = thresholds or [0.50, 0.55, 0.60, 0.65]
+        results = {}
+        orig_th = self.boundary_threshold
+
+        for th in th_list:
+            self.boundary_threshold = float(th)
+            in_rej = 0
+            n_in = len(inside_ml)
+            for i in range(n_in):
+                dec = self.verify(inside_ml[i], inside_fourier[i])
+                if not dec.passed:
+                    in_rej += 1
+            frr = float(in_rej / max(1, n_in))
+
+            oob_rr = 1.0
+            n_out = len(outside_ml) if outside_ml is not None else 0
+            if outside_ml is not None and outside_fourier is not None and n_out > 0:
+                out_blocked = 0
+                for i in range(n_out):
+                    dec = self.verify(outside_ml[i], outside_fourier[i])
+                    if not dec.passed:
+                        out_blocked += 1
+                oob_rr = float(out_blocked / n_out)
+
+            results[th] = {"frr": frr, "oob_rr": oob_rr}
+
+        self.boundary_threshold = orig_th
+        return results

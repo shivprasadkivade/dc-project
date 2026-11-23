@@ -49,8 +49,15 @@ def align_and_slice_waveform(waveform: np.ndarray):
     search_start = min(s_start_cfg, len(mono) // 6)
     search_end = max(search_start + 512, len(mono) - s_end_margin)
     
-    # First-Arrival Onset Peak Alignment
-    abs_search = np.abs(mono[search_start:search_end])
+    # First-Arrival Onset Peak Alignment:
+    # Limit onset peak search to bounded window around trigger index (~2048 samples)
+    # to prevent a louder subsequent tap (Tap 2) in the buffer tail from hijacking Tap 1 peak alignment.
+    search_end_onset = min(search_end, search_start + 2048)
+    abs_search = np.abs(mono[search_start:search_end_onset])
+    if len(abs_search) == 0:
+        abs_search = np.abs(mono[search_start:search_end])
+        search_end_onset = search_end
+
     global_max = float(np.max(abs_search)) + 1e-8
     above_thresh = np.where(abs_search >= 0.35 * global_max)[0]
     if len(above_thresh) > 0:

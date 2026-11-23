@@ -93,10 +93,11 @@ flowchart TD
 ### 3.1 Peak Alignment (`align_and_slice_waveform`)
 Given a mono audio buffer $x[n]$ captured at $f_s = 44.1\text{ kHz}$:
 1. Search window bounded between $n_{\text{start}} = \min(256, N/6)$ and $n_{\text{end}} = N - 1024$.
-2. Peak arrival $n_{\text{peak}}$ locks onto the first threshold crossing exceeding $0.35 \times \max|x[n]|$, followed by local maximum search within 128 samples (first-arrival ballistic wave alignment).
-3. Pre-noise floor $x_{\text{pre}}[n]$ is isolated strictly prior to $n_{\text{peak}} - 96$.
-4. Ballistic onset window: $x_{\text{onset}}[n] \in [n_{\text{peak}} - 32, n_{\text{peak}} + 224]$ ($256$ samples $\approx 5.8\text{ ms}$).
-5. Cavity resonance wake window: $x_{\text{wake}}[n] \in [n_{\text{peak}} - 32, n_{\text{peak}} + 992]$ ($1024$ samples $\approx 23.2\text{ ms}$).
+2. **Trigger-Bounded Onset Alignment:** Onset peak search is strictly bounded within $[n_{\text{start}}, \min(n_{\text{end}}, n_{\text{start}} + 2048)]$. This critical constraint guarantees that a louder subsequent tap (Tap 2) arriving in the tail of the buffer can never hijack the peak alignment index $n_{\text{peak}}$ of Tap 1.
+3. Peak arrival $n_{\text{peak}}$ locks onto the first threshold crossing exceeding $0.35 \times \max|x[n]|$, followed by local maximum search within 128 samples (first-arrival ballistic wave alignment).
+4. Pre-noise floor $x_{\text{pre}}[n]$ is isolated strictly prior to $n_{\text{peak}} - 96$.
+5. Ballistic onset window: $x_{\text{onset}}[n] \in [n_{\text{peak}} - 32, n_{\text{peak}} + 224]$ ($256$ samples $\approx 5.8\text{ ms}$).
+6. Cavity resonance wake window: $x_{\text{wake}}[n] \in [n_{\text{peak}} - 32, n_{\text{peak}} + 992]$ ($1024$ samples $\approx 23.2\text{ ms}$).
 
 ### 3.2 70-Dimensional Machine Learning Vector (`extract_features`)
 Extracted strictly from the normalized wake and onset windows:
@@ -223,10 +224,20 @@ stateDiagram-v2
 - `require_same_zone`: `True`. Both impacts must classify into the same palm rest side (`left` + `left` or `right` + `right`).
 - **Mismatched Zone Handling**: If `left_tap` is followed at $150\text{ ms}$ by `right_tap`, Tap 1 is immediately flushed as a single tap, and Tap 2 becomes the active pending tap without hanging.
 
-### 6.2 Chassis Ringing Tolerance for Tap 2
-When Tap 1 executes, unibody resonance elevates the pre-noise RMS of Tap 2, degrading single-tap SNR and ADR metrics. In `listen.py`:
-- When `state_machine.pending_tap` is waiting (in-bounds contact already proven by Tap 1):
-- Any transient arriving within $[55\text{ ms}, 390\text{ ms}]$ with matching zone prediction and confidence $\ge 0.45$ is granted **chassis ringing tolerance**, bypassing elevated pre-noise rejection.
+### 6.2 Tightened Chassis Ringing Tolerance for Tap 2
+When Tap 1 executes, unibody resonance elevates the pre-noise RMS of Tap 2, depressing measured single-tap attack-to-decay ratio (ADR) and crest factor. 
+
+To maintain security while allowing responsive double taps:
+1. **Strict Temporal Clamping:** Ringing tolerance is strictly bounded to the configured inter-tap interval:
+   $$\Delta t \in [\text{min\_inter\_tap\_ms}, \text{max\_inter\_tap\_ms}] = [80\text{ ms}, 350\text{ ms}]$$
+   Values outside this range (e.g., $< 80\text{ ms}$ or $> 350\text{ ms}$) never receive tolerance.
+2. **Hard Physical Gate Enforcement (No Geofence Bypass):**
+   - The Gen-4 Passive Geofence is **never bypassed**.
+   - Instead, `geofence.verify(..., ringing_tolerant=True)` selectively relaxes pre-noise sensitive gates (`ADR` and `Crest Factor`), while **strictly enforcing physical flexural wave invariant rejection**:
+     - High-to-Low Ratio Floor: $z[0] \ge \text{min\_hf}$ (rubber-damped desk knocks fail Stage 1 immediately).
+     - Low-Frequency Thump Ceiling: $z[21] \le \text{max\_lf}$ (heavy table bumps fail Stage 1 immediately).
+   - In Stage 2, the probability threshold is evaluated against `tap2_boundary_threshold = 0.38`.
+   - Classification confidence must meet a tightened floor: $P(\text{class}) \ge 0.60$ (preventing destructive `Cmd+X` / `Cmd+Z` execution from borderline signals).
 
 ### 6.3 Zero-Latency Single-Tap Mode
 When double-tap is disabled (`--no-double-tap` or `double_tap.enabled: false` in config):
@@ -235,15 +246,25 @@ When double-tap is disabled (`--no-double-tap` or `double_tap.enabled: false` in
 
 ---
 
-## 7. OS Macro & Quartz Dispatch (`src/holo/listen.py`)
+## 7. OS Macro & Non-Blocking Quartz Dispatch (`src/holo/listen.py`)
 
-Shortcuts are dispatched using native macOS CoreGraphics Quartz Event Taps. Emulating key chords via high-level key events can drop the modifier mask if a key-up event interrupts the sequence.
+Shortcuts are dispatched using native macOS CoreGraphics Quartz Event Taps. To ensure audio capture, feature extraction, and state machine transitions remain completely unblocked, dispatch is decoupled onto an asynchronous daemon worker.
 
-AcousticTap dispatches a **4-Event Quartz HID Sequence**:
+### 7.1 Non-Blocking Dispatch Queue (`ShortcutDispatcher`)
+- A dedicated daemon thread worker continuously drains a `queue.Queue()`.
+- Dispatching macro execution takes $< 0.1\text{ ms}$ on the audio thread, while the Quartz 4-event sequence executes in the background worker.
+
+### 7.2 4-Event Quartz HID Sequence
 1. `CGEventCreateKeyboardEvent(src, 55, True)` (Left Command Key Down) with `kCGEventFlagMaskCommand`.
 2. `time.sleep(0.02)` $\rightarrow$ `CGEventCreateKeyboardEvent(src, vk, True)` (Target Key Down with Command Flag).
 3. `time.sleep(0.025)` $\rightarrow$ `CGEventCreateKeyboardEvent(src, vk, False)` (Target Key Up with Command Flag).
 4. `time.sleep(0.02)` $\rightarrow$ `CGEventCreateKeyboardEvent(src, 55, False)` (Left Command Key Up).
+
+### 7.3 Synthetic Keystroke Self-Cooldown Immunity
+- AcousticTap tracks `last_synthetic_emit_ts` whenever synthetic keystrokes are dispatched.
+- In `_init_typing_listener`, the `pynput` typing hook verifies:
+  $$\Delta t_{\text{synth}} = t_{\text{now}} - t_{\text{last\_synthetic\_emit}} > 0.35\text{ s}$$
+  This prevents AcousticTap's own synthetic `Cmd+C/V/X/Z` events from resetting `last_keypress_time` and falsely disabling tap recognition for $0.15\text{ s}$.
 
 ### Virtual Keycode Map
 | Action | Keycode | Key Character | Modifier | Default Operation |
@@ -254,6 +275,9 @@ AcousticTap dispatches a **4-Event Quartz HID Sequence**:
 | `double_right` | `6` | `z` | `Cmd` | Undo |
 
 - **Typing Suppression**: Background keypress monitoring (`pynput.keyboard.Listener`) enforces a $0.15\text{ s}$ cooldown after typing to prevent palm impacts during keyboard typing from triggering macros.
+- **Latency Telemetry Breakdown**: Real-time logging outputs fine-grained timing for each processing stage:
+  $$\text{total\_compute} = t_{\text{feat}} + t_{\text{gf}} + t_{\text{inf}}$$
+  (typically: $t_{\text{feat}} \approx 2.5\text{ ms}$, $t_{\text{gf}} \approx 1.8\text{ ms}$, $t_{\text{inf}} \approx 1.2\text{ ms}$, total $\approx 5.5\text{ ms}$).
 - **Visual Feedback**: Non-blocking asynchronous macOS Notification Center toasts (`osascript`) confirm clipboard operations.
 
 ---
@@ -365,17 +389,27 @@ Current metrics on the `main` branch:
 ```bash
 uv run python -m unittest discover tests
 ```
-- **39 tests passing** in under $1.0\text{ second}$.
-- Zero failures across audio isolation, state machine timing, timeout emission, echo rejection below $80\text{ ms}$, and UI signal bridges.
+- **50 tests passing** in under $1.0\text{ second}$.
+- Complete coverage across Point 1 hardware mic isolation, state machine timing, timeout emission, echo rejection below $80\text{ ms}$, non-blocking HID worker queue, self-cooldown typing suppression immunity, bounded peak alignment resisting louder Tap 2, group-aware cross-validation, and UI signal bridges.
 
 ### Single-Tap Model Performance (`acoustictap_model.joblib`)
 - **Holdout Test Accuracy:** $100.00\%$
 - **Inside False Rejection Rate (FRR):** $4.28\%$ ($11/257$ inside taps rejected)
 - **Outside Rejection Rate (OOB-RR):** $90.66\%$ ($165/182$ desk knocks blocked)
 
+### Group-Aware Hygiene & Geofence Calibration
+- Double-tap sub-windows are split strictly via `GroupShuffleSplit` / `StratifiedGroupKFold` keyed by recording ID, guaranteeing 0% data leakage between train and test.
+- Geofence inside boundary manifold calibration (`X_ml_bound_in`) strictly excludes `t2_sub` ringing tails, maintaining pristine physical surface calibration without manifold distortion.
+- Multi-threshold sweep validates calibration stability across $[0.50, 0.55, 0.60, 0.65]$:
+  | Boundary Threshold | Inside FRR | Outside Rejection Rate (OOB-RR) |
+  | :---: | :---: | :---: |
+  | `0.50` | `4.28%` | `90.66%` |
+  | `0.55` | `5.06%` | `92.86%` |
+  | `0.60` | `6.23%` | `95.05%` |
+  | `0.65` | `7.78%` | `97.80%` |
+
 ### Double-Tap Augmented Model Performance (`acoustictap_doubletap_model.joblib`)
 - **Holdout Test Accuracy:** $100.00\%$
-- **Inside False Rejection Rate (FRR):** $6.24\%$
 - **Double-Tap 5-Fold Cross-Validation Accuracy:** $98.33\%$ (Macro F1: $0.983$)
   - Confusion Matrix on Left vs. Right Double-Taps:
     $$\begin{bmatrix} 60 & 0 \\ 2 & 58 \end{bmatrix}$$

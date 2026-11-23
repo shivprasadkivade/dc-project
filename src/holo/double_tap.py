@@ -6,7 +6,7 @@ Provides:
    filters echo/chassis ringing (< min_inter_tap_ms), matches palm rest zones,
    and dispatches double_left or double_right (or times out to single tap).
 2. Double-Tap Data Recorder (--collect): Records double_left and double_right
-   samples into data/double_tap/ using strictly MacBook built-in mic isolation.
+   samples into dataset/double_tap/ using strictly MacBook built-in mic isolation.
 3. Distinguishability Benchmark (--test-distinguishability): Evaluates zero-shot
    single-tap model performance on Tap 1 vs Tap 2 (residual chassis ringing)
    and trains a dedicated double-tap classifier with Stratified K-Fold CV.

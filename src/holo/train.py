@@ -13,7 +13,13 @@ from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
+from sklearn.model_selection import (
+    StratifiedKFold,
+    StratifiedGroupKFold,
+    GroupShuffleSplit,
+    GridSearchCV,
+    train_test_split,
+)
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 
 from .config import (
@@ -89,15 +95,22 @@ def evaluate_hybrid_cv(
     X_fourier: np.ndarray,
     y: np.ndarray,
     weight_grid: List[float],
+    groups: Optional[np.ndarray] = None,
     n_splits: int = 5,
     seed: int = 42,
 ) -> Tuple[float, float, float, float]:
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    if groups is not None and len(np.unique(groups)) >= n_splits:
+        cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        split_gen = list(cv.split(X_ml, y, groups=groups))
+    else:
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        split_gen = list(cv.split(X_ml, y))
+
     n_classes = len(np.unique(y))
     oof_ml = np.zeros((len(y), n_classes))
     oof_fourier = np.zeros((len(y), n_classes))
 
-    for train_idx, val_idx in cv.split(X_ml, y):
+    for train_idx, val_idx in split_gen:
         pipe_fold = clone(ml_pipeline)
         pipe_fold.fit(X_ml[train_idx], y[train_idx])
         tri_fold = FourierTriangulator().fit(X_fourier[train_idx], y[train_idx])
@@ -143,6 +156,7 @@ def train_and_benchmark(
     # -----------------------------------------------------------------
     in_classes = [c for c in CLASSES if not c.startswith("oob_")]
     X_ml_in, X_fourier_in, y_in, y_labels_in = [], [], [], []
+    groups_in, sample_types_in = [], []
 
     for idx, label in enumerate(in_classes):
         found_files = []
@@ -163,6 +177,8 @@ def train_and_benchmark(
             X_fourier_in.append(extract_fourier_triangulation_vector(waveform))
             y_in.append(idx)
             y_labels_in.append(label)
+            groups_in.append(f"single_{file.stem}")
+            sample_types_in.append("single")
 
     # Augment with double-tap sub-windows if requested
     dt_count = 0
@@ -186,6 +202,7 @@ def train_and_benchmark(
                     if npz_file.name in seen_npz:
                         continue
                     seen_npz.add(npz_file.name)
+                    rec_id = f"dt_{npz_file.stem}"
                     try:
                         data = np.load(npz_file)
                         t1_sub = data.get("tap1_waveform")
@@ -195,12 +212,16 @@ def train_and_benchmark(
                             X_fourier_in.append(extract_fourier_triangulation_vector(t1_sub))
                             y_in.append(target_idx)
                             y_labels_in.append(base_target)
+                            groups_in.append(rec_id)
+                            sample_types_in.append("t1")
                             dt_count += 1
                         if t2_sub is not None and len(t2_sub) > 0:
                             X_ml_in.append(extract_features(t2_sub, feature_set=mode))
                             X_fourier_in.append(extract_fourier_triangulation_vector(t2_sub))
                             y_in.append(target_idx)
                             y_labels_in.append(base_target)
+                            groups_in.append(rec_id)
+                            sample_types_in.append("t2")
                             dt_count += 1
                     except Exception as ex:
                         logger.warning("Could not read double tap sample %s: %s", npz_file, ex)
@@ -249,8 +270,10 @@ def train_and_benchmark(
             bound_in_labels.append("boundary_in")
 
     # Also include in-bounds palm rest gesture taps (left_tap and right_tap) as inside boundary
+    # HYGIENE RULE: ONLY use clean single taps or Tap-1 sub-windows; NEVER feed Tap-2 ringing tails
+    # into the inside boundary manifold (which caused FRR to spike from 4.28% to 6.24%).
     for i in range(len(y_in)):
-        if y_labels_in[i] in ["left_tap", "right_tap"]:
+        if y_labels_in[i] in ["left_tap", "right_tap"] and sample_types_in[i] != "t2":
             X_ml_bound_in.append(X_ml_in[i])
             X_four_bound_in.append(X_fourier_in[i])
             bound_in_labels.append(y_labels_in[i])
@@ -286,16 +309,23 @@ def train_and_benchmark(
     # -----------------------------------------------------------------
     test_size = float(tr_cfg.get("test_size", 0.20))
     indices = np.arange(len(y_in))
+    groups_arr = np.array(groups_in) if groups_in else np.array([f"sample_{i}" for i in indices])
+    unique_groups = np.unique(groups_arr)
     min_class_count = min(np.bincount(y_in))
     stratify_target = y_in if min_class_count >= 2 else None
     actual_folds = min(cv_folds, max(2, min_class_count))
 
-    train_idx, test_idx = train_test_split(indices, test_size=test_size, stratify=stratify_target, random_state=seed)
+    # Use group-aware splitting to prevent Tap 1 and Tap 2 of the same recording leaking across train/test
+    if len(unique_groups) >= 10:
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
+        train_idx, test_idx = next(gss.split(indices, y_in, groups=groups_arr))
+    else:
+        train_idx, test_idx = train_test_split(indices, test_size=test_size, stratify=stratify_target, random_state=seed)
 
     print("\n" + "=" * 70)
-    print(f"[TRAIN HYBRID & GEOFENCE] In-Bounds Gesture Samples: {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout)")
+    print(f"[TRAIN HYBRID & GEOFENCE] In-Bounds Gesture Samples: {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout | {len(unique_groups)} groups)")
     print(f"Target Classes: {in_classes}")
-    print(f"Geofence Inside Boundary Samples:  {len(X_ml_bound_in)} (perimeter boundary + center palm rest)")
+    print(f"Geofence Inside Boundary Samples:  {len(X_ml_bound_in)} (perimeter boundary + center palm rest [Tap 1 only])")
     print(f"Geofence Outside Boundary Samples: {len(X_ml_bound_out)} (desk knocks & table vibrations)")
     if len(X_ml_bound_out) == 0:
         print("  [Notice] No outside boundary data found in dataset/boundary/outside.")
@@ -344,7 +374,7 @@ def train_and_benchmark(
 
             ml_cv, four_cv, hybrid_cv, opt_w = evaluate_hybrid_cv(
                 tuned_pipeline, X_ml_in[train_idx], X_fourier_in[train_idx], y_in[train_idx],
-                weight_grid=weight_grid, n_splits=actual_folds, seed=seed
+                weight_grid=weight_grid, groups=groups_arr[train_idx], n_splits=actual_folds, seed=seed
             )
 
             # Evaluate on unseen holdout split
@@ -430,6 +460,23 @@ def train_and_benchmark(
         oob_rr = float(oob_blocked / len(X_ml_bound_out))
         oob_rr_str = f"{oob_rr * 100:.2f}% ({oob_blocked}/{len(X_ml_bound_out)} desk knocks blocked)"
 
+    # Geofence Boundary Threshold Sweep Report [0.50, 0.55, 0.60, 0.65]
+    sweep_table = gf_validator.sweep_thresholds(
+        inside_ml=X_ml_bound_in,
+        inside_fourier=X_four_bound_in,
+        outside_ml=X_ml_bound_out if len(X_ml_bound_out) > 0 else None,
+        outside_fourier=X_four_bound_out if len(X_four_bound_out) > 0 else None,
+        thresholds=[0.50, 0.55, 0.60, 0.65],
+    )
+    sweep_rows = []
+    print("\n  [Geofence Boundary Threshold Sweep]")
+    print("  Threshold | FRR (False Rejection) | OOB-RR (Desk Knocks Blocked)")
+    print("  ---------------------------------------------------------------")
+    for th, vals in sweep_table.items():
+        row_str = f"    {th:.2f}    |         {vals['frr']*100:5.2f}%         |            {vals['oob_rr']*100:5.2f}%"
+        print(row_str)
+        sweep_rows.append(f"| `{th:.2f}` | `{vals['frr']*100:.2f}%` | `{vals['oob_rr']*100:.2f}%` |")
+
     print("\n" + "=" * 70)
     print(f"--> Winner: Hybrid_{best_name} ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% FFT)")
     print(f"Holdout Classification Accuracy: {holdout_acc * 100:.2f}%")
@@ -442,15 +489,20 @@ def train_and_benchmark(
     # Write Markdown test reports
     report_md_path = RESULTS_DIR / f"test_report_{timestamp}.md"
     latest_md_path = RESULTS_DIR / "latest_test_report.md"
+    sweep_md_table = "\n".join(sweep_rows)
     md_content = (
         f"# AcousticTap Hybrid & Geofence Test Report ({timestamp})\n\n"
         f"- **Winning Architecture:** `Hybrid_{best_name}` ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% Fourier)\n"
-        f"- **In-Bounds Dataset Samples:** {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout)\n"
+        f"- **In-Bounds Dataset Samples:** {len(y_in)} ({len(train_idx)} train / {len(test_idx)} holdout | {len(unique_groups)} groups)\n"
         f"- **Geofence Inside Boundary Samples:** {len(X_ml_bound_in)}\n"
         f"- **Geofence Outside Boundary Samples:** {len(X_ml_bound_out)}\n"
         f"- **Holdout Test Accuracy:** `{holdout_acc*100:.2f}%`\n"
         f"- **Geofence Inside FRR:** `{frr*100:.2f}%`\n"
         f"- **Geofence Outside Rejection Rate (OOB-RR):** `{oob_rr_str}`\n\n"
+        f"## Geofence Threshold Sweep\n"
+        f"| Threshold | Inside FRR | Outside Rejection Rate (OOB-RR) |\n"
+        f"| :---: | :---: | :---: |\n"
+        f"{sweep_md_table}\n\n"
         f"## Holdout Classification Report\n```text\n{report_str}\n```\n\n"
         f"## Confusion Matrix (`{in_classes}`)\n```text\n{cm}\n```\n"
     )

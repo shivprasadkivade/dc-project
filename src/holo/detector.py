@@ -52,9 +52,11 @@ class ImpulseDetector:
         min_dt_ms = float(min_inter_tap_ms if min_inter_tap_ms is not None else dt_cfg.get("min_inter_tap_ms", 80.0))
 
         if is_double:
-            self.post_blocks = int(aud_cfg.get("double_tap_post_blocks", 4))
+            # 5 post_blocks + 1 trigger + 3 pre_blocks = 9 blocks = 4608 samples (~104.5 ms)
+            # fully preserving the 1024-sample wake window (n_peak + 992) without truncation.
+            self.post_blocks = int(aud_cfg.get("double_tap_post_blocks", 5))
             block_ms = (int(aud_cfg.get("block_size", 512)) / int(aud_cfg.get("sample_rate", 44100))) * 1000.0
-            target_refractory_blocks = max(4, int(round(min_dt_ms / block_ms)))
+            target_refractory_blocks = max(5, int(round(min_dt_ms / block_ms)))
             self.cooldown_blocks = max(1, target_refractory_blocks - self.post_blocks)
         else:
             self.post_blocks = int(aud_cfg.get("post_blocks", 8))
