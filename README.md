@@ -4,6 +4,8 @@
 [![Accuracy](https://img.shields.io/badge/Holdout%20Accuracy-100.0%25-brightgreen)](file:///Users/shivprasadkivade/Desktop/dc-project/reports/instructor_expansion_report.md)
 [![OOB Rejection](https://img.shields.io/badge/Desk%20Thump%20Rejection-95.0%25-success)](file:///Users/shivprasadkivade/Desktop/dc-project/reports/geofence_validation_report.md)
 [![Latency](https://img.shields.io/badge/End--to--End%20Latency-16.01%20ms-informational)](file:///Users/shivprasadkivade/Desktop/dc-project/reports/latency_breakdown.md)
+[![Desktop GUI](https://img.shields.io/badge/Desktop%20UI-PySide6%20%2B%20Menu%20Bar-orange)](file:///Users/shivprasadkivade/Desktop/dc-project)
+[![Tests](https://img.shields.io/badge/Unit%20Tests-30%20passing-success)](file:///Users/shivprasadkivade/Desktop/dc-project/tests)
 
 > **Executive Overview:** AcousticTap turns the solid aluminum unibody of a laptop into a zero-hardware acoustic trackpad. By capturing microsecond mechanical transients via the internal laptop microphone, extracting structural **Lamb-wave dispersion delays** and **12-band spatial resonance profiles**, and filtering external desk vibrations with a **Two-Stage Passive Acoustic Geofence**, AcousticTap reliably recognizes left and right palm-rest taps while completely ignoring ambient speech, keyboard clatter, and external desk thumps.
 
@@ -57,6 +59,7 @@ Instead of adding active sonar, we realized the solution was already hiding insi
    - [8.2 Hardware Audio Isolation (Bluetooth Earphone Support)](#82-hardware-audio-isolation-bluetooth-earphone-support)
    - [8.3 Boundary Calibration & Training](#83-boundary-calibration--training)
    - [8.4 Automated Academic Benchmark Suite](#84-automated-academic-benchmark-suite)
+   - [8.5 Desktop Application (PySide6 GUI & Menu Bar Tray)](#85-desktop-application-pyside6-gui--menu-bar-tray)
 9. [Configuration Reference (`config/config.yaml`)](#9-configuration-reference-configconfigyaml)
 10. [Repository Structure & Generated Artifacts](#10-repository-structure--generated-artifacts)
 
@@ -507,6 +510,22 @@ Outputs complete markdown and PNG artifacts into `reports/`.
 
 ---
 
+### 8.5 Desktop Application (PySide6 GUI & Menu Bar Tray)
+
+AcousticTap includes a native desktop application with real-time visual feedback and macOS menu bar integration:
+
+```bash
+uv run python -m src.holo.ui
+```
+
+- **Live Monitor View**: Displays real-time microphone waveforms, geofence pass/fail boundary status, and confidence scores for each recognized tap.
+- **Visual Calibration Wizard**: Interactive graphical step-by-step wizard to calibrate inside perimeter taps and outside desk knocks for new desks or laptop surfaces.
+- **Hardware Diagnostics View**: Real-time microphone input metering, RMS threshold slider, and active device routing information.
+- **Settings & Shortcut Remapping**: Easily configure modifier keys (`Cmd` / `Ctrl`), sensitivity thresholds, and native toast notifications.
+- **macOS System Tray**: Sits in the top menu bar for quick one-click pause/resume and silent background operation without keeping a terminal open.
+
+---
+
 ## 9. Configuration Reference (`config/config.yaml`)
 
 All system hyperparameters can be adjusted in [`config/config.yaml`](file:///Users/shivprasadkivade/Desktop/dc-project/config/config.yaml):
@@ -611,10 +630,23 @@ listener:
 │   ├── collect.py                      # Interactive center and boundary data collector
 │   ├── train.py                        # Unified model trainer and geofence calibrator
 │   ├── evaluate.py                     # Holdout test evaluator & confusion matrix generator
-│   └── listen.py                       # Low-latency listener daemon with macOS toast notifications
-├── tests/                              # Automated test suite
+│   ├── listen.py                       # Low-latency listener daemon with macOS toast notifications
+│   └── ui/                             # PySide6 Desktop GUI & System Tray application
+│       ├── app.py                      # Qt Application entrypoint
+│       ├── main_window.py              # Main navigation & window layout
+│       ├── tray.py                     # macOS menu bar system tray integration
+│       ├── engine_bridge.py            # Thread-safe bridge between engine & Qt UI
+│       ├── audio_adapter.py            # Real-time microphone visualizer adapter
+│       ├── config_store.py             # Persistent UI settings store
+│       ├── theme.py                    # Dark/Light modern theme stylesheet
+│       └── views/                      # UI Views (Monitor, Calibration, Diagnostics, Settings)
+├── tests/                              # Automated test suite (30 unit tests)
 │   ├── test_audio_manager.py           # Device isolation & passive recovery tests
-│   └── test_listener_notifications.py  # macOS toast notification unit tests
+│   ├── test_listener_notifications.py  # macOS toast notification unit tests
+│   └── test_ui/                        # Desktop UI and engine bridge test suite
+│       ├── test_config_store.py        # Settings persistence tests
+│       ├── test_engine_bridge.py       # Engine-worker signal & thread boundary tests
+│       └── test_views_and_tray.py      # View rendering and tray lifecycle tests
 ├── benchmark_report.py                 # Automated benchmark and validation suite
 ├── MAC_TESTER_GUIDE.md                 # Hardware troubleshooting and tester instructions
 └── pyproject.toml                      # Project metadata and dependencies
