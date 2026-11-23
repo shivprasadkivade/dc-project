@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import argparse
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
@@ -17,6 +18,7 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score, a
 
 from .config import (
     CFG,
+    PROJECT_ROOT,
     DATA_DIR,
     BOUNDARY_INSIDE_DIR,
     BOUNDARY_OUTSIDE_DIR,
@@ -25,10 +27,13 @@ from .config import (
     RESULTS_DIR,
     MODEL_PATH,
     CLASSES,
+    DOUBLE_TAP_DATA_DIR,
 )
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector, FourierTriangulator
 from .geofence import AcousticGeofenceValidator
+
+logger = logging.getLogger("holo.train")
 
 def build_candidates_from_config() -> Dict[str, Pipeline]:
     tr_cfg = CFG.get("training", {})
@@ -113,7 +118,11 @@ def evaluate_hybrid_cv(
 
     return ml_f1, fourier_f1, best_hyb_f1, best_w
 
-def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optional[float] = None):
+def train_and_benchmark(
+    feature_set: Optional[str] = None,
+    fourier_weight: Optional[float] = None,
+    include_double_tap: bool = False,
+):
     tr_cfg = CFG.get("training", {})
     hyb_cfg = CFG.get("hybrid_fusion", {})
     mode = feature_set if feature_set is not None else CFG.get("features", {}).get("mode", "enhanced")
@@ -130,20 +139,74 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
 
     # -----------------------------------------------------------------
     # Step 1: Load Core Gesture Classes (left_tap, right_tap, noise)
+    # Recursively scans DATA_DIR (including dataset/SHIV_ROOM/ and dataset/)
     # -----------------------------------------------------------------
     in_classes = [c for c in CLASSES if not c.startswith("oob_")]
     X_ml_in, X_fourier_in, y_in, y_labels_in = [], [], [], []
 
     for idx, label in enumerate(in_classes):
-        folder = DATA_DIR / label
-        if not folder.exists():
-            continue
-        for file in sorted(folder.glob("*.npy")):
+        found_files = []
+        for file in sorted(DATA_DIR.rglob("*.npy")):
+            # Exclude double_tap and boundary subdirectories from base single-tap classes
+            if "double_tap" in file.parts or "boundary" in file.parts:
+                continue
+            if file.parent.name == label or (file.stem.startswith(label) and file.parent.name not in in_classes):
+                found_files.append(file)
+
+        seen = set()
+        for file in found_files:
+            if file in seen:
+                continue
+            seen.add(file)
             waveform = np.load(file)
             X_ml_in.append(extract_features(waveform, feature_set=mode))
             X_fourier_in.append(extract_fourier_triangulation_vector(waveform))
             y_in.append(idx)
             y_labels_in.append(label)
+
+    # Augment with double-tap sub-windows if requested
+    dt_count = 0
+    if include_double_tap:
+        # Check both DOUBLE_TAP_DATA_DIR and fallback paths
+        search_dirs = [DOUBLE_TAP_DATA_DIR]
+        alt_dir = PROJECT_ROOT / "data" / "double_tap"
+        if alt_dir != DOUBLE_TAP_DATA_DIR and alt_dir.exists():
+            search_dirs.append(alt_dir)
+
+        seen_npz = set()
+        for s_dir in search_dirs:
+            if not s_dir.exists():
+                continue
+            for dt_label, base_target in [("double_left", "left_tap"), ("double_right", "right_tap")]:
+                dt_folder = s_dir / dt_label
+                if not dt_folder.exists() or base_target not in in_classes:
+                    continue
+                target_idx = in_classes.index(base_target)
+                for npz_file in sorted(dt_folder.glob("*.npz")):
+                    if npz_file.name in seen_npz:
+                        continue
+                    seen_npz.add(npz_file.name)
+                    try:
+                        data = np.load(npz_file)
+                        t1_sub = data.get("tap1_waveform")
+                        t2_sub = data.get("tap2_waveform")
+                        if t1_sub is not None and len(t1_sub) > 0:
+                            X_ml_in.append(extract_features(t1_sub, feature_set=mode))
+                            X_fourier_in.append(extract_fourier_triangulation_vector(t1_sub))
+                            y_in.append(target_idx)
+                            y_labels_in.append(base_target)
+                            dt_count += 1
+                        if t2_sub is not None and len(t2_sub) > 0:
+                            X_ml_in.append(extract_features(t2_sub, feature_set=mode))
+                            X_fourier_in.append(extract_fourier_triangulation_vector(t2_sub))
+                            y_in.append(target_idx)
+                            y_labels_in.append(base_target)
+                            dt_count += 1
+                    except Exception as ex:
+                        logger.warning("Could not read double tap sample %s: %s", npz_file, ex)
+
+    if dt_count > 0:
+        print(f"  [Double-Tap Augmented] Loaded {dt_count} sub-window samples from double-tap datasets")
 
     X_ml_in = np.array(X_ml_in, dtype=np.float32) if X_ml_in else np.empty((0, 70), dtype=np.float32)
     X_fourier_in = np.array(X_fourier_in, dtype=np.float64) if X_fourier_in else np.empty((0, 43), dtype=np.float64)
@@ -166,24 +229,24 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
         )
 
     # -----------------------------------------------------------------
-    # Step 2: Load Dedicated Geofence Boundary Datasets
+    # Step 2: Load Dedicated Geofence Boundary Datasets (All inside/ and outside/ subdirectories)
     # -----------------------------------------------------------------
     X_ml_bound_in, X_four_bound_in, bound_in_labels = [], [], []
     X_ml_bound_out, X_four_bound_out = [], []
 
-    # Inside boundary samples from dataset/boundary/inside/
-    if BOUNDARY_INSIDE_DIR.exists():
-        for file in sorted(BOUNDARY_INSIDE_DIR.glob("*.npy")):
-            waveform = np.load(file)
-            X_ml_bound_in.append(extract_features(waveform, feature_set=mode))
-            X_four_bound_in.append(extract_fourier_triangulation_vector(waveform))
-            fname = file.name.lower()
-            if "left" in fname:
-                bound_in_labels.append("left_tap")
-            elif "right" in fname:
-                bound_in_labels.append("right_tap")
-            else:
-                bound_in_labels.append("boundary_in")
+    # Inside boundary samples across DATA_DIR
+    in_boundary_files = sorted(DATA_DIR.rglob("inside/*.npy"))
+    for file in in_boundary_files:
+        waveform = np.load(file)
+        X_ml_bound_in.append(extract_features(waveform, feature_set=mode))
+        X_four_bound_in.append(extract_fourier_triangulation_vector(waveform))
+        fname = file.name.lower()
+        if "left" in fname:
+            bound_in_labels.append("left_tap")
+        elif "right" in fname:
+            bound_in_labels.append("right_tap")
+        else:
+            bound_in_labels.append("boundary_in")
 
     # Also include in-bounds palm rest gesture taps (left_tap and right_tap) as inside boundary
     for i in range(len(y_in)):
@@ -192,12 +255,12 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
             X_four_bound_in.append(X_fourier_in[i])
             bound_in_labels.append(y_labels_in[i])
 
-    # Outside boundary samples from dataset/boundary/outside/
-    if BOUNDARY_OUTSIDE_DIR.exists():
-        for file in sorted(BOUNDARY_OUTSIDE_DIR.glob("*.npy")):
-            waveform = np.load(file)
-            X_ml_bound_out.append(extract_features(waveform, feature_set=mode))
-            X_four_bound_out.append(extract_fourier_triangulation_vector(waveform))
+    # Outside boundary samples across DATA_DIR
+    out_boundary_files = sorted(DATA_DIR.rglob("outside/*.npy"))
+    for file in out_boundary_files:
+        waveform = np.load(file)
+        X_ml_bound_out.append(extract_features(waveform, feature_set=mode))
+        X_four_bound_out.append(extract_fourier_triangulation_vector(waveform))
 
     # Also load any legacy oob_* directories in DATA_DIR
     for oob_dir in sorted(DATA_DIR.glob("oob_*")):
@@ -394,7 +457,13 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
     report_md_path.write_text(md_content, encoding="utf-8")
     latest_md_path.write_text(md_content, encoding="utf-8")
 
-    # Save Production Artifact
+    # Save Artifact (Dedicated artifact when include_double_tap is active)
+    output_model_path = (
+        MODEL_DIR / "acoustictap_doubletap_model.joblib"
+        if include_double_tap
+        else MODEL_PATH
+    )
+
     joblib.dump({
         "model": final_ml,
         "triangulator": final_tri,
@@ -408,14 +477,16 @@ def train_and_benchmark(feature_set: Optional[str] = None, fourier_weight: Optio
         "geofence_frr": frr,
         "geofence_oob_rr": oob_rr,
         "timestamp": timestamp,
-    }, MODEL_PATH)
+        "double_tap_augmented": bool(include_double_tap),
+    }, output_model_path)
 
-    print(f"\nSaved production model with Geofence -> {MODEL_PATH}")
+    print(f"\nSaved model with Geofence -> {output_model_path}")
     print(f"Saved test report -> {latest_md_path}\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train and optimize Hybrid AcousticTap models with Geofence")
     parser.add_argument("--features", "--feature-set", dest="features", choices=["baseline", "enhanced"], default=None)
     parser.add_argument("--fourier-weight", type=float, default=None)
+    parser.add_argument("--include-double-tap", action="store_true", help="Include double-tap sub-windows in training and save dedicated double-tap model")
     args = parser.parse_args()
-    train_and_benchmark(args.features, args.fourier_weight)
+    train_and_benchmark(args.features, args.fourier_weight, include_double_tap=args.include_double_tap)

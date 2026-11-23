@@ -15,6 +15,34 @@ from .config import (
 from .detector import ImpulseDetector, get_input_channels
 from .audio_manager import SplitAudioEngine
 
+def archive_dataset(targets: list[str] | None = None):
+    """Safely archives existing dataset folders to dataset/archive_<timestamp>/ before recording fresh samples."""
+    import shutil
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_root = DATA_DIR / f"archive_{timestamp}"
+
+    folders_to_archive = []
+    if targets is None or "all" in targets:
+        folders_to_archive = ["left_tap", "right_tap", "noise", "boundary"]
+    else:
+        folders_to_archive = targets
+
+    archived_any = False
+    for folder_name in folders_to_archive:
+        folder = DATA_DIR / folder_name
+        if folder.exists() and any(folder.iterdir()):
+            archive_root.mkdir(parents=True, exist_ok=True)
+            dest = archive_root / folder_name
+            shutil.move(str(folder), str(dest))
+            folder.mkdir(parents=True, exist_ok=True)
+            archived_any = True
+            print(f"  [Archived] Moved old '{folder_name}' -> {dest.relative_to(DATA_DIR.parent)}")
+
+    if archived_any:
+        print(f"✓ Previous data archived safely in {archive_root.relative_to(DATA_DIR.parent)}.")
+        print("  Starting with fresh empty dataset folders.\n")
+
 def save_sample(save_dir: Path, label: str, waveform: np.ndarray) -> Path:
     save_dir.mkdir(parents=True, exist_ok=True)
     existing = len(list(save_dir.glob("*.npy")))
@@ -233,7 +261,20 @@ if __name__ == "__main__":
         default=None,
         help="Collect boundary data specifically for 'inside' or 'outside' zone"
     )
+    parser.add_argument(
+        "--clean", "--reset",
+        action="store_true",
+        help="Safely archive existing dataset files to dataset/archive_<timestamp>/ before recording fresh ones"
+    )
     args = parser.parse_args()
+
+    if args.clean:
+        if args.boundary:
+            archive_dataset(["boundary"])
+        elif args.label != "all":
+            archive_dataset([args.label])
+        else:
+            archive_dataset()
 
     if args.calibrate_geofence:
         calibrate_geofence_session(args.threshold)

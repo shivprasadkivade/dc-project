@@ -27,6 +27,7 @@ detector:
   peak_multiplier: 1.8          # Peak amplitude must exceed rms_threshold * peak_multiplier
   bg_snr_ratio: 2.2             # RMS must exceed rolling background floor * bg_snr_ratio
   bg_ema_alpha: 0.95            # Exponential moving average decay for background noise floor
+  min_confidence: 0.58          # Minimum prediction confidence to execute action
 
 signal_window:
   search_start_samples: 256     # Start index when locking onto microsecond peak
@@ -120,14 +121,24 @@ listener:
     left_tap: "c"               # Triggers Cmd+C (macOS) or Ctrl+C (Windows/Linux)
     right_tap: "v"              # Triggers Cmd+V (macOS) or Ctrl+V (Windows/Linux)
 
+double_tap:
+  enabled: false                # Toggle double-tap feature: false = instant zero-latency single taps; true = enable Cut/Undo
+  min_inter_tap_ms: 80          # Rejects acoustic rebound / echo from tap 1 (< 80 ms)
+  max_inter_tap_ms: 350         # Max gap between tap 1 and tap 2
+  require_same_zone: true       # Both taps must classify as the same side (left-left or right-right)
+  dataset_path: "dataset/double_tap" # Strictly separate from single-tap data
+  actions:
+    double_left: "x"            # Cut (Cmd+X on macOS / Ctrl+X on Windows/Linux)
+    double_right: "z"           # Undo (Cmd+Z on macOS / Ctrl+Z on Windows/Linux)
+
 
 geofence:
   enabled: true
-  boundary_threshold: 0.62
+  boundary_threshold: 0.50      # Lowered to 0.50 so natural palm rest taps pass reliably without false outside-boundary drops
   min_hf_lf_ratio_db: -14.5
-  min_attack_decay_ratio: 3.50   # Updated for proper 10*log10 dB scale
-  min_crest_factor: 3.80
-  dispersion_window_ms: [-5.0, 3.0]
+  min_attack_decay_ratio: 2.20  # Lowered so relaxed/gentle taps are not rejected by Stage 1
+  min_crest_factor: 3.50
+  dispersion_window_ms: [-6.0, 5.0] # Accommodates natural hand position variations across palm rest
   max_inside_distance: 5.80
   surface_tolerance_scale: 1.15
   class_conditional: true

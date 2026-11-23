@@ -28,17 +28,39 @@ def get_input_channels(device_index: int | None = None) -> int:
 
 class ImpulseDetector:
     """Captures fixed-length audio snippets around sharp transients using config.yaml thresholds."""
-    def __init__(self, threshold: float | None = None):
+    def __init__(
+        self,
+        threshold: float | None = None,
+        double_tap_mode: bool | None = None,
+        min_inter_tap_ms: float | None = None,
+        cooldown_blocks: int | None = None,
+    ):
         det_cfg = CFG.get("detector", {})
         aud_cfg = CFG.get("audio", {})
+        dt_cfg = CFG.get("double_tap", {})
+
         self.threshold = float(threshold if threshold is not None else det_cfg.get("rms_threshold", 0.02))
         self.peak_mult = float(det_cfg.get("peak_multiplier", 1.8))
         self.bg_snr_ratio = float(det_cfg.get("bg_snr_ratio", 2.3))
         self.ema_alpha = float(det_cfg.get("bg_ema_alpha", 0.95))
 
         self.pre_blocks = int(aud_cfg.get("pre_blocks", 3))
-        self.post_blocks = int(aud_cfg.get("post_blocks", 8))
-        self.cooldown_blocks = int(aud_cfg.get("cooldown_blocks", 25))
+
+        # Respect min_inter_tap_ms (~70-80 ms) refractory period in double-tap mode
+        # so Tap 2 is never swallowed, while still blocking <60 ms bounce.
+        is_double = bool(double_tap_mode if double_tap_mode is not None else dt_cfg.get("enabled", False))
+        min_dt_ms = float(min_inter_tap_ms if min_inter_tap_ms is not None else dt_cfg.get("min_inter_tap_ms", 80.0))
+
+        if is_double:
+            self.post_blocks = int(aud_cfg.get("double_tap_post_blocks", 4))
+            block_ms = (int(aud_cfg.get("block_size", 512)) / int(aud_cfg.get("sample_rate", 44100))) * 1000.0
+            target_refractory_blocks = max(4, int(round(min_dt_ms / block_ms)))
+            self.cooldown_blocks = max(1, target_refractory_blocks - self.post_blocks)
+        else:
+            self.post_blocks = int(aud_cfg.get("post_blocks", 8))
+            self.cooldown_blocks = int(cooldown_blocks if cooldown_blocks is not None else aud_cfg.get("cooldown_blocks", 25))
+
+        self.double_tap_mode = is_double
 
         self.pre_buffer = deque(maxlen=self.pre_blocks)
         self.capturing = False

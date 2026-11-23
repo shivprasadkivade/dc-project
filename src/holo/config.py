@@ -82,3 +82,19 @@ GEOFENCE_CFG = CFG.get("geofence", {
     "surface_tolerance_scale": 1.15,
     "class_conditional": True,
 })
+
+# Double Tap Constants
+DOUBLE_TAP_CFG = CFG.get("double_tap", {})
+DOUBLE_TAP_ENABLED = bool(DOUBLE_TAP_CFG.get("enabled", True))
+DOUBLE_TAP_MIN_MS = float(DOUBLE_TAP_CFG.get("min_inter_tap_ms", 80))
+DOUBLE_TAP_MAX_MS = float(DOUBLE_TAP_CFG.get("max_inter_tap_ms", 350))
+DOUBLE_TAP_REQUIRE_SAME_ZONE = bool(DOUBLE_TAP_CFG.get("require_same_zone", True))
+_dt_path_cfg = str(DOUBLE_TAP_CFG.get("dataset_path", "dataset/double_tap"))
+DOUBLE_TAP_DATA_DIR = PROJECT_ROOT / _dt_path_cfg
+if not DOUBLE_TAP_DATA_DIR.exists() and (PROJECT_ROOT / "data" / "double_tap").exists():
+    DOUBLE_TAP_DATA_DIR = PROJECT_ROOT / "data" / "double_tap"
+DOUBLE_TAP_ACTIONS = dict(DOUBLE_TAP_CFG.get("actions", {
+    "double_left": "x",
+    "double_right": "z",
+}))
+DOUBLE_TAP_DATA_DIR.mkdir(parents=True, exist_ok=True)

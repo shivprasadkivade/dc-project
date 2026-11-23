@@ -18,17 +18,24 @@ from .config import (
     SAMPLE_RATE,
     BLOCK_SIZE,
     RMS_THRESHOLD,
+    MODEL_DIR,
     MODEL_PATH,
     SPLIT_INPUT,
     TAP_DEVICE,
     SECONDARY_DEVICE,
     CAPTURE_SECONDARY,
     AUTO_RECONNECT,
+    DOUBLE_TAP_ENABLED,
+    DOUBLE_TAP_MIN_MS,
+    DOUBLE_TAP_MAX_MS,
+    DOUBLE_TAP_REQUIRE_SAME_ZONE,
+    DOUBLE_TAP_ACTIONS,
 )
 from .detector import ImpulseDetector, get_input_channels
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector
 from .audio_manager import SplitAudioEngine, print_audio_devices
+from .double_tap import DoubleTapStateMachine
 
 def show_toast(title: str, subtitle: str, message: str, sound: str = "Tink"):
     """Displays a native macOS Notification Center toast notification in a non-blocking subprocess."""
@@ -59,19 +66,42 @@ def emit_shortcut(
     mod_name: Optional[str] = None,
     kb_controller: Optional[Any] = None,
     on_synthetic_change: Optional[Callable[[bool], None]] = None,
+    inter_tap_ms: float = 0.0,
 ) -> tuple[bool, str]:
-    """Dispatches Cmd+C / Cmd+V using full 4-event sequence (Quartz + pynput fallback)."""
-    is_left = "left" in action_label.lower()
-    key_char = "c" if is_left else "v"
-    action_name = "Copy" if is_left else "Paste"
+    """Dispatches Cmd+C / Cmd+V / Cmd+X / Cmd+Z using full 4-event sequence (Quartz + pynput fallback)."""
+    lbl_lower = action_label.lower()
+    is_double = "double" in lbl_lower
+    is_left = "left" in lbl_lower
+
+    if is_double:
+        if is_left:
+            key_char = "x"
+            action_name = "Cut"
+        else:
+            key_char = "z"
+            action_name = "Undo"
+    else:
+        if is_left:
+            key_char = "c"
+            action_name = "Copy"
+        else:
+            key_char = "v"
+            action_name = "Paste"
+
     is_macos = (platform.system() == "Darwin")
     resolved_mod_name = mod_name if mod_name is not None else ("Cmd" if is_macos else "Ctrl")
     shortcut_str = f"{resolved_mod_name}+{key_char.upper()}"
+    gap_info = f" | Interval: {inter_tap_ms:.0f} ms" if inter_tap_ms > 0 else ""
 
     if dry_run:
-        msg = f"[DRY-RUN] {action_label.upper():9s} -> Would {action_name} ({shortcut_str})  [Conf: {conf_pct:.0f}% | {latency_ms:.1f} ms]"
+        msg = f"[DRY-RUN] {action_label.upper():12s} -> Would {action_name} ({shortcut_str}){gap_info}  [Conf: {conf_pct:.0f}% | {latency_ms:.1f} ms]"
         if enable_notifications:
-            show_toast("AcousticTap [DRY-RUN]", f"{action_label.replace('_', ' ').title()}", f"Preview: Would {action_name} ({shortcut_str})", sound="Tink")
+            show_toast(
+                "AcousticTap [DRY-RUN]",
+                f"{action_label.replace('_', ' ').title()}",
+                f"Preview: Would {action_name} ({shortcut_str}){gap_info}",
+                sound="Tink",
+            )
         return True, msg
 
     if on_synthetic_change:
@@ -83,9 +113,9 @@ def emit_shortcut(
     dispatched = False
     clip_info = ""
 
-    # Read initial clipboard count on macOS to verify if Copy succeeded
+    # Read initial clipboard count on macOS to verify if Copy/Cut succeeded
     initial_count = 0
-    if is_macos:
+    if is_macos and not is_double:
         try:
             from AppKit import NSPasteboard
             initial_count = NSPasteboard.generalPasteboard().changeCount()
@@ -98,7 +128,8 @@ def emit_shortcut(
             try:
                 import Quartz
                 src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
-                vk = 8 if key_char == "c" else 9  # virtual keycode: 8='c', 9='v'
+                vk_map = {"c": 8, "v": 9, "x": 7, "z": 6}
+                vk = vk_map.get(key_char, 8)
 
                 # Step 1: Command Key Down (virtual keycode 55 = Left Command)
                 cmd_down = Quartz.CGEventCreateKeyboardEvent(src, 55, True)
@@ -143,7 +174,16 @@ def emit_shortcut(
                 dispatched = False
 
         # 3. Report detailed clipboard feedback & dispatch macOS toast notifications
-        if is_macos:
+        if is_double:
+            if enable_notifications:
+                side_str = "Left" if is_left else "Right"
+                show_toast(
+                    f"AcousticTap - {action_name} ({shortcut_str})",
+                    f"Double {side_str} Tap Recognized",
+                    f"{action_name} ({shortcut_str}) executed!{gap_info}",
+                    sound="Tink" if is_left else "Pop",
+                )
+        elif is_macos:
             time.sleep(0.05)
             try:
                 from AppKit import NSPasteboard, NSPasteboardTypeString
@@ -182,7 +222,7 @@ def emit_shortcut(
         elif enable_notifications:
             show_toast("AcousticTap", f"{action_name} ({shortcut_str})", f"{action_label.replace('_', ' ').title()} Triggered", sound="Tink")
 
-        msg = f"[{action_label.upper()}] -> {action_name} ({shortcut_str}) executed!{clip_info}  [Conf: {conf_pct:.0f}% | {latency_ms:.1f} ms]"
+        msg = f"[{action_label.upper()}] -> {action_name} ({shortcut_str}) executed!{clip_info}{gap_info}  [Conf: {conf_pct:.0f}% | {latency_ms:.1f} ms]"
         return dispatched, msg
 
     except Exception as ex:
@@ -264,6 +304,15 @@ class AcousticTapCore:
             else:
                 self.mod_key = keyboard.Key.ctrl
                 self.mod_name = "Ctrl"
+
+            # Warm up JIT and feature extraction so first live tap runs in ~5 ms
+            try:
+                dummy_wav = np.zeros(4096, dtype=np.float32)
+                dummy_wav[1024] = 0.05
+                self.evaluate_waveform(dummy_wav, enable_shortcuts=False)
+            except Exception:
+                pass
+
             return True
         except Exception:
             return False
@@ -456,7 +505,22 @@ def run_listener(
     no_secondary_capture: bool = False,
     verbose: bool = False,
     no_notify: bool = False,
+    double_tap: Optional[bool] = None,
+    no_double_tap: bool = False,
 ):
+    if double_tap is True:
+        double_tap_active = True
+    elif no_double_tap is True or double_tap is False:
+        double_tap_active = False
+    else:
+        double_tap_active = bool(DOUBLE_TAP_ENABLED)
+
+    # Intelligently load the double-tap augmented model if double-tap mode is active
+    if model_file == MODEL_PATH and double_tap_active:
+        dt_model = MODEL_DIR / "acoustictap_doubletap_model.joblib"
+        if dt_model.exists():
+            model_file = dt_model
+
     if not model_file.exists():
         raise FileNotFoundError(f"Model file not found at {model_file}. Run 'uv run python -m src.holo.train' first.")
 
@@ -466,10 +530,24 @@ def run_listener(
         no_geofence=no_geofence,
         no_notify=no_notify,
     )
+    state_machine = (
+        DoubleTapStateMachine(
+            min_inter_tap_ms=DOUBLE_TAP_MIN_MS,
+            max_inter_tap_ms=DOUBLE_TAP_MAX_MS,
+            require_same_zone=DOUBLE_TAP_REQUIRE_SAME_ZONE,
+            actions=DOUBLE_TAP_ACTIONS,
+        )
+        if double_tap_active
+        else None
+    )
 
     channels = get_input_channels()
     effective_thresh = float(threshold if threshold is not None else RMS_THRESHOLD)
-    detector = ImpulseDetector(threshold=effective_thresh)
+    detector = ImpulseDetector(
+        threshold=effective_thresh,
+        double_tap_mode=double_tap_active,
+        min_inter_tap_ms=DOUBLE_TAP_MIN_MS,
+    )
 
     effective_tap_dev = tap_device if tap_device is not None else TAP_DEVICE
     effective_sec_dev = secondary_device if secondary_device is not None else SECONDARY_DEVICE
@@ -499,84 +577,135 @@ def run_listener(
         print("\n" + "=" * 65)
         print("  AcousticTap - Palm Rest Acoustic Gestures")
         if dry_run:
-            print("  Mode:      DRY-RUN (Preview Only - Shortcuts are NOT pressed)")
+            print("  Mode:        DRY-RUN (Preview Only - Shortcuts are NOT pressed)")
         else:
-            print(f"  Mode:      LIVE MACRO ({core.mod_name}+C / {core.mod_name}+V Active)")
-        print(f"  Hardware:  {tap_name} (Chassis Isolated)")
-        print(f"  Geofence:  {'DISABLED' if no_geofence else 'ACTIVE (Desk Knock Filter)'}")
+            print(f"  Mode:        LIVE MACRO Active ({core.mod_name}+C/V/X/Z)")
+        print(f"  Model:       {model_file.name} ({'Double-Tap Augmented' if 'doubletap' in model_file.name else 'Standard'})")
+        print(f"  Hardware:    {tap_name} (Chassis Isolated)")
+        print(f"  Geofence:    {'DISABLED' if no_geofence else 'ACTIVE (Desk Knock Filter)'}")
+        print(f"  Double-Tap:  {'ACTIVE (Cut: Cmd+X, Undo: Cmd+Z)' if double_tap_active else 'DISABLED (Instant Single-Tap)'}")
         print("=" * 65)
         print("  Shortcuts:")
-        print(f"    • Left Palm Rest  -> Copy  ({core.mod_name}+C)")
-        print(f"    • Right Palm Rest -> Paste ({core.mod_name}+V)")
+        print(f"    • Left Palm Rest        -> Copy  ({core.mod_name}+C)")
+        print(f"    • Right Palm Rest       -> Paste ({core.mod_name}+V)")
+        if double_tap_active:
+            print(f"    • Double-Tap Left       -> Cut   ({core.mod_name}+X)")
+            print(f"    • Double-Tap Right      -> Undo  ({core.mod_name}+Z)")
         print("-----------------------------------------------------------------")
         if dry_run:
             print("  [Notice] In --dry-run mode, keys are simulated and not sent.")
-            print("  To ACTUALLY copy and paste, run without --dry-run:")
+            print("  To ACTUALLY execute shortcuts, run without --dry-run:")
             print("  >>> uv run python -m src.holo.listen <<<")
             print("-----------------------------------------------------------------")
         print("  Ready! Tap your palm rest... (Press Ctrl+C to stop)\n")
 
+        def _dispatch(ev: Dict[str, Any]):
+            ev_label = ev.get("label", "")
+            ev_conf = float(ev.get("confidence", 0.0))
+            ev_lat = float(ev.get("latency_ms", 0.0))
+            ev_dt = float(ev.get("inter_tap_ms", 0.0))
+
+            dispatched, act_msg = emit_shortcut(
+                action_label=ev_label,
+                conf_pct=ev_conf * 100.0,
+                latency_ms=ev_lat,
+                dry_run=dry_run,
+                enable_notifications=core.enable_notifications,
+                mod_name=core.mod_name,
+                kb_controller=core.kb_controller,
+                on_synthetic_change=core._set_synthetic,
+                inter_tap_ms=ev_dt,
+            )
+            if dry_run:
+                print(f"  {act_msg}")
+            elif act_msg:
+                print(f"  >>> {act_msg}")
+
         while True:
+            ready_events = []
             try:
-                waveform = detector.event_queue.get(timeout=1.0)
+                waveform = detector.event_queue.get(timeout=0.025)
+                res = core.evaluate_waveform(
+                    waveform,
+                    enable_shortcuts=False,
+                    dry_run=dry_run,
+                    override_confidence=confidence_min,
+                )
+
+                if res.get("ignored_typing"):
+                    if verbose:
+                        print("  -- [Typing] Ignored during active keyboard use")
+                    continue
+
+                # Chassis ringing tolerance for second tap of a double tap
+                is_candidate_tap2 = False
+                now_ts = time.time()
+                if double_tap_active and state_machine is not None and state_machine.pending_tap is not None:
+                    delta_ms = (now_ts - state_machine.pending_time) * 1000.0
+                    if (state_machine.min_inter_tap_ms - 25.0) <= delta_ms <= (state_machine.max_inter_tap_ms + 40.0):
+                        cand_label = res.get("label", "unknown")
+                        cand_conf = float(res.get("confidence", 0.0))
+                        pending_label = state_machine.pending_tap.get("label", "")
+                        same_zone = (cand_label == pending_label) or ("left" in cand_label and "left" in pending_label) or ("right" in cand_label and "right" in pending_label)
+                        if (same_zone or not state_machine.require_same_zone) and cand_label in ("left_tap", "right_tap") and cand_conf >= 0.45:
+                            is_candidate_tap2 = True
+
+                if not res.get("geofence_passed"):
+                    if is_candidate_tap2:
+                        res["geofence_passed"] = True
+                        res["meets_min_confidence"] = True
+                        if verbose:
+                            print(f"     [Double-Tap Tap 2: Ringing tolerance applied | Gap: {delta_ms:.1f} ms]")
+                    else:
+                        if verbose:
+                            print(f"  -- [Desk Knock] Filtered ({res.get('geofence_reason')}) | {res.get('latency_ms'):.1f} ms")
+                        else:
+                            print("  -- [Desk Knock] Filtered (Outside Boundary)")
+                        continue
+
+                pred_label = res.get("label", "unknown")
+                conf = float(res.get("confidence", 0.0))
+                req_c = float(res.get("required_confidence", 0.55))
+                lat = float(res.get("latency_ms", 0.0))
+
+                if pred_label == "noise":
+                    if verbose:
+                        print(f"  -- [Noise] Clatter filtered (Conf: {conf*100:.0f}%) | {lat:.1f} ms")
+                    continue
+
+                if not res.get("meets_min_confidence") and not is_candidate_tap2:
+                    if verbose:
+                        print(f"  -- [Ignored] Low confidence: {pred_label} ({conf:.2f} < {req_c:.2f})")
+                    continue
+
+                if verbose:
+                    print(f"     [Breakdown: {res.get('breakdown')}]")
+
+                if double_tap_active and state_machine is not None:
+                    ready_events.extend(state_machine.process_tap(res))
+                else:
+                    ready_events.append(res)
+
             except queue.Empty:
                 if hasattr(audio_ctx, "ensure_active"):
                     audio_ctx.ensure_active()
-                continue
 
-            res = core.evaluate_waveform(
-                waveform,
-                enable_shortcuts=(not dry_run),
-                dry_run=dry_run,
-                override_confidence=confidence_min,
-            )
+            # Poll state machine for expired single tap
+            if double_tap_active and state_machine is not None:
+                ready_events.extend(state_machine.check_timeout(time.time()))
 
-            if res.get("ignored_typing"):
-                if verbose:
-                    print("  -- [Typing] Ignored during active keyboard use")
-                continue
-
-            if not res.get("geofence_passed"):
-                if verbose:
-                    print(f"  -- [Desk Knock] Filtered ({res.get('geofence_reason')}) | {res.get('latency_ms'):.1f} ms")
-                else:
-                    print("  -- [Desk Knock] Filtered (Outside Boundary)")
-                continue
-
-            pred_label = res.get("label", "unknown")
-            conf = float(res.get("confidence", 0.0))
-            req_c = float(res.get("required_confidence", 0.55))
-            lat = float(res.get("latency_ms", 0.0))
-
-            if pred_label == "noise":
-                if verbose:
-                    print(f"  -- [Noise] Clatter filtered (Conf: {conf*100:.0f}%) | {lat:.1f} ms")
-                continue
-
-            if not res.get("meets_min_confidence"):
-                if verbose:
-                    print(f"  -- [Ignored] Low confidence: {pred_label} ({conf:.2f} < {req_c:.2f})")
-                continue
-
-            if verbose:
-                print(f"     [Breakdown: {res.get('breakdown')}]")
-
-            if dry_run:
-                action_name = "Copy" if "left" in pred_label else "Paste"
-                key_c = "C" if "left" in pred_label else "V"
-                print(f"  [DRY-RUN] {pred_label.upper():9s} -> Would {action_name} ({core.mod_name}+{key_c})  [Conf: {conf*100:.0f}% | {lat:.1f} ms]")
-            else:
-                act_msg = res.get("action_message", "")
-                if act_msg:
-                    print(f"  >>> {act_msg}")
+            for ev in ready_events:
+                _dispatch(ev)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AcousticTap - Palm Rest Gestures with Hardware Audio Isolation")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to a .joblib model file")
     parser.add_argument("--threshold", type=float, default=RMS_THRESHOLD, help="Mic RMS trigger threshold")
-    parser.add_argument("--confidence", type=float, default=0.65, help="Minimum confidence to trigger")
+    parser.add_argument("--confidence", type=float, default=None, help="Minimum confidence to trigger (default: from config/class thresholds)")
     parser.add_argument("--dry-run", action="store_true", help="Preview predictions without firing OS shortcuts")
     parser.add_argument("--no-geofence", action="store_true", help="Disable passive acoustic geofence spatial verification")
+    parser.add_argument("--double-tap", dest="double_tap", action="store_true", default=None, help="Force enable double-tap gestures (Cut: Cmd+X, Undo: Cmd+Z)")
+    parser.add_argument("--no-double-tap", dest="no_double_tap", action="store_true", default=False, help="Force disable double-tap gestures (instant zero-latency single taps)")
     parser.add_argument("--tap-device", type=str, default=None, help="Device name or index for Point 1 (MacBook mic)")
     parser.add_argument("--secondary-device", type=str, default=None, help="Device name or index for Point 2 (Earphones/Headset)")
     parser.add_argument("--no-secondary-capture", action="store_true", help="Do not capture secondary mic (leave earphones purely for system/music)")
@@ -604,4 +733,6 @@ if __name__ == "__main__":
             no_secondary_capture=args.no_secondary_capture,
             verbose=args.verbose,
             no_notify=args.no_notify,
+            double_tap=args.double_tap,
+            no_double_tap=args.no_double_tap,
         )
